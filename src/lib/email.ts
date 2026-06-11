@@ -8,6 +8,7 @@ import PaymentFailed2 from "../emails/payment-failed-2.js";
 import PaymentFailed3 from "../emails/payment-failed-3.js";
 import PaymentFailed4 from "../emails/payment-failed-4.js";
 import Reactivation from "../emails/reactivation.js";
+import CustomBody from "../emails/custom-body.js";
 
 /** templateKey (DunningStep / campaigns.ts) → React Email component. */
 const TEMPLATES: Record<string, (props: DunningEmailProps) => ReactElement> = {
@@ -45,6 +46,29 @@ export function applyMergeVars(template: string, vars: Record<string, string>): 
   return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => vars[key] ?? match);
 }
 
+const HTML_ESCAPES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+/**
+ * Merge-var substitution into an HTML context (custom bodyHtml). The stored
+ * body is sanitized, but the VALUES arrive at send time and include
+ * Stripe-sourced data a hostile end-customer controls (e.g. customer name) —
+ * they must be escaped, never trusted. JSX templates get this for free;
+ * dangerouslySetInnerHTML does not.
+ */
+export function applyMergeVarsHtml(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {
+    const value = vars[key];
+    if (value === undefined) return match;
+    return value.replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch] ?? ch);
+  });
+}
+
 export interface RenderedEmail {
   html: string;
   text: string;
@@ -53,10 +77,20 @@ export interface RenderedEmail {
 export async function renderDunningEmail(
   templateKey: string,
   props: DunningEmailProps,
+  /**
+   * Sanitized + merge-var-escaped custom body. When set, it replaces the
+   * templateKey component's prose inside the same locked layout.
+   */
+  bodyHtml?: string | null,
 ): Promise<RenderedEmail> {
-  const Template = TEMPLATES[templateKey];
-  if (!Template) throw new Error(`Unknown email template: ${templateKey}`);
-  const element = createElement(Template, props);
+  let element: ReactElement;
+  if (bodyHtml) {
+    element = createElement(CustomBody, { ...props, bodyHtml });
+  } else {
+    const Template = TEMPLATES[templateKey];
+    if (!Template) throw new Error(`Unknown email template: ${templateKey}`);
+    element = createElement(Template, props);
+  }
   return {
     html: await render(element),
     text: await render(element, { plainText: true }),

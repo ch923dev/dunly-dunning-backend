@@ -41,5 +41,5 @@ Test/replay scripts (all `npx tsx scripts/<name>.ts`): `create-failing-subscript
 
 - Resend sandbox only delivers to the account owner's email; use `delivered@resend.dev` / `bounced@resend.dev` for synthetic tests.
 - Stripe Smart Retries keep running even for SUPPRESSED cases — a suppressed case can still recover via `invoice.paid`.
-- `requireWorkspace` attaches session/org to `req` via untyped custom properties (known Phase 2 cleanup).
+- Workspace context: routes behind `requireWorkspace` read it via `getWorkspace(req)` (throws if the middleware wasn't applied) — never `req.workspace!`.
 - Migrations in `prisma/migrations/` are locked — create new migrations, never edit existing ones.

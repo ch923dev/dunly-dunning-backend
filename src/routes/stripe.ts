@@ -3,7 +3,7 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { stripe, buildConnectAuthorizeUrl } from "../lib/stripe.js";
 import { env } from "../env.js";
-import { requireOwner } from "../middleware/workspace.js";
+import { getWorkspace, requireOwner } from "../middleware/workspace.js";
 
 const STATE_TTL_MS = 15 * 60 * 1000;
 
@@ -15,7 +15,7 @@ export const stripeRouter = Router();
 stripeRouter.get("/connection", async (req, res, next) => {
   try {
     const connection = await prisma.stripeConnection.findUnique({
-      where: { organizationId: req.workspace!.organizationId },
+      where: { organizationId: getWorkspace(req).organizationId },
     });
     if (!connection) {
       res.json({ connected: false });
@@ -41,7 +41,7 @@ stripeRouter.get("/connection", async (req, res, next) => {
  */
 stripeRouter.get("/connect", requireOwner, async (req, res, next) => {
   try {
-    const { organizationId } = req.workspace!;
+    const { organizationId } = getWorkspace(req);
 
     const existing = await prisma.stripeConnection.findUnique({
       where: { organizationId },
@@ -76,7 +76,7 @@ stripeRouter.get("/connect", requireOwner, async (req, res, next) => {
  */
 stripeRouter.post("/disconnect", requireOwner, async (req, res, next) => {
   try {
-    const { organizationId } = req.workspace!;
+    const { organizationId } = getWorkspace(req);
 
     const connection = await prisma.stripeConnection.findUnique({
       where: { organizationId },

@@ -15,11 +15,13 @@ import {
 } from "../lib/campaigns.js";
 import {
   applyMergeVars,
+  applyMergeVarsHtml,
   formatAmount,
   renderDunningEmail,
   sendDunningEmail,
 } from "../lib/email.js";
 import { makeCaseToken } from "../lib/tokens.js";
+import { clampToWindow, hourInZone, isInWindow } from "../lib/send-window.js";
 import { env } from "../env.js";
 
 /** Statuses meaning "this stage already left the building" — never reschedule. */
@@ -87,11 +89,16 @@ export async function enqueueSequence(dunningCaseId: string) {
 export async function runSequenceForCase(dunningCaseId: string) {
   const dunningCase = await prisma.dunningCase.findUnique({
     where: { id: dunningCaseId },
-    include: { connection: true, emailSends: true },
+    include: {
+      connection: { include: { organization: { include: { settings: true } } } },
+      emailSends: true,
+    },
   });
   if (!dunningCase) return;
   // A stop condition may have closed the case before this job ran.
   if (dunningCase.status !== "ACTIVE") return;
+
+  const timezone = dunningCase.connection.organization.settings?.timezone ?? "UTC";
 
   // Pin the campaign at first scheduling (snapshot semantics — mid-sequence
   // campaign edits never shift an in-flight case).
@@ -112,9 +119,16 @@ export async function runSequenceForCase(dunningCaseId: string) {
   const sendsByStage = new Map(dunningCase.emailSends.map((s) => [s.stageOrder, s]));
   const enabledSteps = campaign.steps.filter((s) => s.isEnabled);
 
+  // Per-stage amount threshold (phase-2 step 6): below-threshold stages get a
+  // CANCELED row for history but never a job.
+  const skippedByAmount = (step: (typeof enabledSteps)[number]) =>
+    step.skipIfAmountBelow !== null && dunningCase.amountDue < step.skipIfAmountBelow;
+
   // Stages still owed to this case: never created, or CANCELED before sending
   // (reopen-as-resume, locked decision #2 — sent stages never repeat).
+  // Threshold-skipped stages don't count — they'd skew the resume anchor.
   const owed = enabledSteps.filter((step) => {
+    if (skippedByAmount(step)) return false;
     const existing = sendsByStage.get(step.order);
     return !existing || existing.status === "CANCELED";
   });
@@ -129,17 +143,54 @@ export async function runSequenceForCase(dunningCaseId: string) {
   const now = Date.now();
   let scheduled = 0;
 
+  // Natural send time, clamped forward into the stage's send window (if any).
+  const scheduleTimeFor = (step: (typeof enabledSteps)[number]) => {
+    const natural = new Date(
+      Math.max(now, dunningCase.failedAt.getTime() + (step.delayHours - offsetHours) * 3_600_000),
+    );
+    if (step.sendWindowStart === null || step.sendWindowEnd === null) return natural;
+    return clampToWindow(natural, timezone, step.sendWindowStart, step.sendWindowEnd);
+  };
+
   for (const step of enabledSteps) {
     const existing = sendsByStage.get(step.order);
     if (existing && SENT_STATUSES.includes(existing.status)) continue;
+
+    if (skippedByAmount(step)) {
+      const reason = `amount below stage threshold (${dunningCase.amountDue} < ${step.skipIfAmountBelow})`;
+      if (!existing) {
+        // History row, never a job — the stage visibly skipped, not missing.
+        try {
+          await prisma.emailSend.create({
+            data: {
+              dunningCaseId: dunningCase.id,
+              kind: "SEQUENCE",
+              stageOrder: step.order,
+              scheduledFor: scheduleTimeFor(step),
+              status: "CANCELED",
+              error: reason,
+            },
+          });
+        } catch (err) {
+          if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002")) {
+            throw err;
+          }
+        }
+      } else {
+        // Threshold added after scheduling — cancel the pending send.
+        await prisma.emailSend.updateMany({
+          where: { id: existing.id, status: "SCHEDULED" },
+          data: { status: "CANCELED", error: reason },
+        });
+      }
+      continue;
+    }
 
     let emailSendId: string;
     let scheduledFor: Date;
 
     if (!existing) {
-      scheduledFor = new Date(
-        Math.max(now, dunningCase.failedAt.getTime() + (step.delayHours - offsetHours) * 3_600_000),
-      );
+      scheduledFor = scheduleTimeFor(step);
       try {
         const created = await prisma.emailSend.create({
           data: {
@@ -157,9 +208,7 @@ export async function runSequenceForCase(dunningCaseId: string) {
         throw err;
       }
     } else if (existing.status === "CANCELED") {
-      scheduledFor = new Date(
-        Math.max(now, dunningCase.failedAt.getTime() + (step.delayHours - offsetHours) * 3_600_000),
-      );
+      scheduledFor = scheduleTimeFor(step);
       // Guarded resume — a concurrent stop condition can't be overwritten.
       const { count } = await prisma.emailSend.updateMany({
         where: { id: existing.id, status: "CANCELED" },
@@ -261,6 +310,14 @@ export async function deliverScheduledEmail(emailSendId: string) {
   };
 
   // Guard chain — order matters: cheapest state checks first.
+  // PAUSED holds, never cancels (phase-3 locked decision #2): the row stays
+  // SCHEDULED and this job completes, leaving no future job — "held". The
+  // resume endpoint re-enqueues held rows via the sequence worker's
+  // self-heal path. Stop conditions still close paused cases directly.
+  if (send.kind === "SEQUENCE" && dunningCase.status === "PAUSED") {
+    console.log(`[dunning] held send ${send.id} (stage ${send.stageOrder}): case is paused`);
+    return;
+  }
   if (send.kind === "SEQUENCE" && dunningCase.status !== "ACTIVE") {
     return cancel(`case is ${dunningCase.status}`);
   }
@@ -302,21 +359,57 @@ export async function deliverScheduledEmail(emailSendId: string) {
     return;
   }
 
-  // Resolve subject + template for this stage.
+  const organization = dunningCase.connection.organization;
+  const settings = organization.settings;
+
+  // Resolve subject + template (+ optional custom body) for this stage.
   let subjectTemplate: string;
   let templateKey: string;
+  let bodyTemplate: string | null = null;
   if (send.kind === "REACTIVATION") {
     subjectTemplate = REACTIVATION_SUBJECT;
     templateKey = REACTIVATION_TEMPLATE_KEY;
   } else {
     const step = dunningCase.campaign?.steps.find((s) => s.order === send.stageOrder);
     if (!step) return cancel(`campaign step ${send.stageOrder} no longer exists`);
+
+    // Per-stage controls, re-checked at the authority (settings may have
+    // changed since scheduling).
+    if (step.skipIfAmountBelow !== null && dunningCase.amountDue < step.skipIfAmountBelow) {
+      return cancel(
+        `amount below stage threshold (${dunningCase.amountDue} < ${step.skipIfAmountBelow})`,
+      );
+    }
+    if (step.sendWindowStart !== null && step.sendWindowEnd !== null) {
+      const timezone = settings?.timezone ?? "UTC";
+      const now = new Date();
+      if (!isInWindow(hourInZone(now, timezone), step.sendWindowStart, step.sendWindowEnd)) {
+        // Outside the window: DEFER, never cancel — re-enqueue this same
+        // emailSendId at the next window opening. The row stays SCHEDULED,
+        // so every idempotency layer keeps holding.
+        const next = clampToWindow(now, timezone, step.sendWindowStart, step.sendWindowEnd);
+        await prisma.emailSend.update({
+          where: { id: send.id },
+          data: { scheduledFor: next },
+        });
+        await boss.send(QUEUES.sendDunningEmail, { emailSendId: send.id } satisfies SendDunningEmailJob, {
+          startAfter: next,
+          singletonKey: send.id,
+          retryLimit: 3,
+          retryDelay: 60,
+          retryBackoff: true,
+        });
+        console.log(
+          `[dunning] deferred send ${send.id} (stage ${send.stageOrder}) to ${next.toISOString()} (window ${step.sendWindowStart}–${step.sendWindowEnd} ${timezone})`,
+        );
+        return;
+      }
+    }
+
     subjectTemplate = step.subject;
     templateKey = step.templateKey;
+    bodyTemplate = step.bodyHtml;
   }
-
-  const organization = dunningCase.connection.organization;
-  const settings = organization.settings;
   const subscription = dunningCase.stripeSubscriptionId
     ? await prisma.subscription.findUnique({
         where: { stripeSubscriptionId: dunningCase.stripeSubscriptionId },
@@ -327,25 +420,36 @@ export async function deliverScheduledEmail(emailSendId: string) {
   const portalUrl = `${env.API_URL}/r/portal/${makeCaseToken(dunningCase.id, "portal")}`;
   const unsubscribeUrl = `${env.API_URL}/r/unsubscribe/${makeCaseToken(dunningCase.id, "unsubscribe")}`;
 
-  const subject = applyMergeVars(subjectTemplate, {
+  const payUrl = dunningCase.hostedInvoiceUrl ?? portalUrl;
+  const mergeVars = {
     company_name: organization.name,
     customer_name: dunningCase.customer.name ?? "there",
     amount_due: amountFormatted,
     plan_name: subscription?.planName ?? "subscription",
-  });
+    update_payment_link: payUrl,
+  };
+
+  const subject = applyMergeVars(subjectTemplate, mergeVars);
+  // Custom bodies are stored sanitized; values are escaped at substitution
+  // (customer-controlled data must never reach the HTML raw).
+  const bodyHtml = bodyTemplate ? applyMergeVarsHtml(bodyTemplate, mergeVars) : null;
 
   try {
-    const { html, text } = await renderDunningEmail(templateKey, {
-      customerName: dunningCase.customer.name,
-      companyName: organization.name,
-      planName: subscription?.planName ?? null,
-      amountFormatted,
-      brandColor: settings?.brandColor ?? null,
-      logoUrl: settings?.logoUrl ?? null,
-      payUrl: dunningCase.hostedInvoiceUrl ?? portalUrl,
-      portalUrl,
-      unsubscribeUrl,
-    });
+    const { html, text } = await renderDunningEmail(
+      templateKey,
+      {
+        customerName: dunningCase.customer.name,
+        companyName: organization.name,
+        planName: subscription?.planName ?? null,
+        amountFormatted,
+        brandColor: settings?.brandColor ?? null,
+        logoUrl: settings?.logoUrl ?? null,
+        payUrl,
+        portalUrl,
+        unsubscribeUrl,
+      },
+      bodyHtml,
+    );
 
     const resendEmailId = await sendDunningEmail({
       to: toEmail,

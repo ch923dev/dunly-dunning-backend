@@ -1,7 +1,19 @@
-import type { RequestHandler } from "express";
+import type { Request, RequestHandler } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.js";
 import { prisma } from "../lib/prisma.js";
+
+/**
+ * Typed accessor for the workspace context set by requireWorkspace.
+ * Throws (→ 500) if called on a route that isn't behind the middleware —
+ * a programming error, not a client error.
+ */
+export function getWorkspace(req: Request) {
+  if (!req.workspace) {
+    throw new Error("getWorkspace called outside requireWorkspace middleware");
+  }
+  return req.workspace;
+}
 
 /**
  * Resolves the session and the caller's workspace, attaching both to

@@ -14,7 +14,7 @@ export const stripeCallbackRouter = Router();
 
 stripeCallbackRouter.get("/", async (req, res) => {
   const redirect = (params: string) =>
-    res.redirect(`${env.APP_URL}/settings/stripe?${params}`);
+    res.redirect(`${env.APP_URL}/app/settings?${params}`);
 
   const { code, state, error } = req.query;
 

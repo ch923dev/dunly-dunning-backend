@@ -28,7 +28,7 @@ npm run dev                   # API on http://localhost:4000
 | `STRIPE_CLIENT_ID` | Dashboard → Settings → Connect → Onboarding options → OAuth (test mode `ca_…`) |
 | `STRIPE_WEBHOOK_SECRET` | printed by `stripe listen` (below) |
 | `BETTER_AUTH_SECRET` | any random 32+ char string (also signs email footer link tokens) |
-| `RESEND_API_KEY` / `EMAIL_FROM` | Resend dashboard. Dev: `EMAIL_FROM=onboarding@resend.dev` (sandbox delivers ONLY to the Resend account owner's email) |
+| `RESEND_API_KEY` / `EMAIL_FROM` | Resend dashboard. Dev uses a verified dev domain (`billing@mail.yt-karaoke.online`) so sends reach any address; without one, `onboarding@resend.dev` works but delivers ONLY to the Resend account owner's email |
 | `RESEND_WEBHOOK_SECRET` | Resend dashboard → Webhooks (Svix `whsec_…`). Optional; `/webhooks/resend` returns 503 until set. Dev uses a random placeholder + synthetic signed events |
 
 ## Webhook dev loop (Stripe CLI)

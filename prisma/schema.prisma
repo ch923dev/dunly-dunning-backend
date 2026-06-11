@@ -331,6 +331,11 @@ model DunningStep {
   subject     String
   templateKey String // maps to a React Email template in src/emails
 
+  /// User-edited rich-text body (sanitized server-side on save). null = use
+  /// the built-in templateKey component. Rendered inside the locked layout —
+  /// the footer is chrome, not content, so edits can never remove it.
+  bodyHtml String?
+
   /// Per-stage controls (product plan §5.2). Phase 1 honors isEnabled only;
   /// send windows and amount thresholds are enforced with the Phase 2
   /// settings UI (phase-1 spec, locked decision #3).

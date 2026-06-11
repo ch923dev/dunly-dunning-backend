@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { createPortalLink } from "../lib/stripe.js";
+import { getWorkspace } from "../middleware/workspace.js";
 
 export const portalRouter = Router();
 
@@ -26,7 +27,7 @@ portalRouter.post("/link", async (req, res, next) => {
     });
     // Per-workspace isolation: a workspace can only mint links for its own
     // cases. Unknown and not-yours look identical (404) on purpose.
-    if (!dunningCase || dunningCase.connection.organizationId !== req.workspace!.organizationId) {
+    if (!dunningCase || dunningCase.connection.organizationId !== getWorkspace(req).organizationId) {
       res.status(404).json({ error: "not_found" });
       return;
     }
