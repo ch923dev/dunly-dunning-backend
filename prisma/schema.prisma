@@ -1,0 +1,405 @@
+// Dunly — Prisma schema (Phase 0: Foundation)
+// PostgreSQL backs both Prisma models and the pg-boss job queue (separate "pgboss" schema).
+// Spec: docs/phase-0-foundation.md
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Auth (Better Auth core models)
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sessions    Session[]
+  accounts    Account[]
+  members     Member[]
+  invitations Invitation[]
+
+  @@map("user")
+}
+
+model Session {
+  id                   String   @id @default(cuid())
+  expiresAt            DateTime
+  token                String   @unique
+  ipAddress            String?
+  userAgent            String?
+  activeOrganizationId String?
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("verification")
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy (Better Auth organization plugin) — organization == Dunly workspace
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String?  @unique
+  logo      String?
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  members      Member[]
+  invitations  Invitation[]
+  settings     WorkspaceSettings?
+  connection   StripeConnection?
+  campaigns    DunningCampaign[]
+  suppressions SuppressionEntry[]
+
+  @@map("organization")
+}
+
+model Member {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           String       @default("member")
+  createdAt      DateTime     @default(now())
+
+  @@unique([organizationId, userId])
+  @@map("member")
+}
+
+model Invitation {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  role           String?
+  status         String       @default("pending")
+  expiresAt      DateTime
+  inviterId      String
+  user           User         @relation(fields: [inviterId], references: [id], onDelete: Cascade)
+
+  @@map("invitation")
+}
+
+/// Workspace-specific settings, 1:1 with an organization.
+/// Kept separate so the auth plugin's tables stay unpolluted.
+model WorkspaceSettings {
+  id             String       @id @default(cuid())
+  organizationId String       @unique
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  logoUrl        String?
+  brandColor     String?
+  replyTo        String?
+  timezone       String       @default("UTC")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Stripe layer
+// ---------------------------------------------------------------------------
+
+/// A workspace's connected Stripe account (Connect OAuth, Standard accounts).
+/// One connection per workspace in MVP.
+model StripeConnection {
+  id              String           @id @default(cuid())
+  organizationId  String           @unique
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  stripeAccountId String           @unique
+  livemode        Boolean          @default(false)
+  scope           String?
+  status          ConnectionStatus @default(CONNECTED)
+  /// Signing secret for the per-workspace direct webhook endpoint
+  /// (/webhooks/:workspaceId/:connectionId). Null when only the platform
+  /// Connect endpoint is in use.
+  webhookSecret   String?
+  businessName    String?
+  defaultCurrency String?
+  connectedAt     DateTime         @default(now())
+  disconnectedAt  DateTime?
+
+  customers Customer[]
+  cases     DunningCase[]
+}
+
+enum ConnectionStatus {
+  CONNECTED
+  DISCONNECTED
+  REVOKED
+}
+
+/// Single-use CSRF state for the Stripe Connect OAuth flow.
+model OAuthState {
+  id             String    @id @default(cuid())
+  token          String    @unique
+  organizationId String
+  expiresAt      DateTime
+  usedAt         DateTime?
+  createdAt      DateTime  @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Event store (idempotency keystone)
+// ---------------------------------------------------------------------------
+
+/// Every Stripe webhook event we receive, exactly once.
+/// The UNIQUE on stripeEventId absorbs replays at the database layer.
+model WebhookEvent {
+  id              String             @id @default(cuid())
+  stripeEventId   String             @unique
+  type            String
+  stripeAccountId String?
+  livemode        Boolean            @default(false)
+  payload         Json
+  status          WebhookEventStatus @default(RECEIVED)
+  error           String?
+  receivedAt      DateTime           @default(now())
+  processedAt     DateTime?
+
+  @@index([type, receivedAt])
+  @@index([status])
+}
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+  SKIPPED
+}
+
+// ---------------------------------------------------------------------------
+// Mirrored Stripe data
+// ---------------------------------------------------------------------------
+
+/// An end-customer of the merchant, mirrored from Stripe.
+model Customer {
+  id               String           @id @default(cuid())
+  connectionId     String
+  connection       StripeConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  stripeCustomerId String
+  email            String?
+  name             String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  subscriptions Subscription[]
+  cases         DunningCase[]
+
+  @@unique([connectionId, stripeCustomerId])
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  customerId           String
+  customer             Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  stripeSubscriptionId String             @unique
+  status               SubscriptionStatus
+  planName             String?
+  amount               Int? // minor units
+  currency             String?
+  currentPeriodEnd     DateTime?
+  canceledAt           DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  UNPAID
+  CANCELED
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+  PAUSED
+}
+
+// ---------------------------------------------------------------------------
+// Dunning domain
+// ---------------------------------------------------------------------------
+
+/// One failed invoice we are recovering — the case-state machine.
+/// Voluntary cancels are excluded from recovery-rate math.
+model DunningCase {
+  id                   String           @id @default(cuid())
+  connectionId         String
+  connection           StripeConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  customerId           String
+  customer             Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  stripeInvoiceId      String           @unique
+  stripeSubscriptionId String?
+  /// Stripe hosted invoice page — the primary "pay / update card" CTA.
+  hostedInvoiceUrl     String?
+  amountDue            Int // minor units
+  currency             String
+  attemptCount         Int              @default(0)
+  failureCode          String?
+  failureMessage       String?
+  status               CaseStatus       @default(ACTIVE)
+  /// Campaign pinned at case open (snapshot — mid-sequence campaign edits
+  /// never shift an in-flight case's schedule).
+  campaignId           String?
+  campaign             DunningCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  failedAt             DateTime
+  recoveredAt          DateTime?
+  closedAt             DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  emailSends EmailSend[]
+
+  @@index([connectionId, status])
+  @@index([customerId])
+}
+
+enum CaseStatus {
+  ACTIVE
+  RECOVERED
+  LOST_INVOLUNTARY
+  LOST_VOLUNTARY
+  SUPPRESSED
+  PAUSED
+}
+
+/// A merchant-configured email sequence. Consumed in Phase 1.
+model DunningCampaign {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  steps DunningStep[]
+  cases DunningCase[]
+}
+
+/// One email in a campaign sequence, sent N hours after the failure.
+model DunningStep {
+  id          String          @id @default(cuid())
+  campaignId  String
+  campaign    DunningCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  order       Int
+  delayHours  Int
+  subject     String
+  templateKey String // maps to a React Email template in src/emails
+
+  /// Per-stage controls (product plan §5.2). Phase 1 honors isEnabled only;
+  /// send windows and amount thresholds are enforced with the Phase 2
+  /// settings UI (phase-1 spec, locked decision #3).
+  isEnabled         Boolean @default(true)
+  /// Send window, hour-of-day 0–23 in the workspace timezone (Phase 2).
+  sendWindowStart   Int?
+  sendWindowEnd     Int?
+  /// Skip this stage when amountDue (minor units) is below this (Phase 2).
+  skipIfAmountBelow Int?
+
+  @@unique([campaignId, order])
+}
+
+/// A single dunning email scheduled/sent for a case. Rows are only written in
+/// Phase 1, but the table — and its never-send-the-same-stage-twice
+/// constraint — exists from Phase 0 (product plan §7.2).
+model EmailSend {
+  id            String          @id @default(cuid())
+  dunningCaseId String
+  dunningCase   DunningCase     @relation(fields: [dunningCaseId], references: [id], onDelete: Cascade)
+  /// REACTIVATION uses reserved stageOrder 100 (src/lib/campaigns.ts).
+  kind          EmailSendKind   @default(SEQUENCE)
+  stageOrder    Int
+  toEmail       String?
+  subject       String?
+  scheduledFor  DateTime
+  sentAt        DateTime?
+  resendEmailId String?
+  status        EmailSendStatus @default(SCHEDULED)
+  error         String?
+  openedAt      DateTime?
+  clickedAt     DateTime?
+  createdAt     DateTime        @default(now())
+
+  /// Last line of defense: an invoice can never receive the same stage twice.
+  @@unique([dunningCaseId, stageOrder])
+}
+
+enum EmailSendKind {
+  SEQUENCE
+  REACTIVATION
+}
+
+enum EmailSendStatus {
+  SCHEDULED
+  SENT
+  DELIVERED
+  OPENED
+  CLICKED
+  BOUNCED
+  CANCELED
+}
+
+/// Workspace-scoped do-not-email list (product plan §5.7). Blocks sends for
+/// current AND future cases matching the email. Stripe Smart Retries continue
+/// regardless — a suppressed case can still close RECOVERED.
+model SuppressionEntry {
+  id             String            @id @default(cuid())
+  organizationId String
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  reason         SuppressionReason
+  createdAt      DateTime          @default(now())
+
+  @@unique([organizationId, email])
+}
+
+enum SuppressionReason {
+  UNSUBSCRIBED
+  BOUNCED
+  MANUAL
+}
