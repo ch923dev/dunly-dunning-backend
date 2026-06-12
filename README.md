@@ -6,7 +6,7 @@ Better Auth, Resend + React Email.
 **Specs:** [Phase 0 — Foundation](../docs/phase-0-foundation.md) ·
 [Phase 1 — Dunning core](../docs/phase-1-dunning-core.md) ·
 **Product plan:** [docs/dunly-product-plan.md](../docs/dunly-product-plan.md) ·
-**Design system:** [/DESIGN.md](../DESIGN.md)
+**Design system:** [DESIGN.md](../dunly-ui/DESIGN.md)
 
 ## Setup
 
