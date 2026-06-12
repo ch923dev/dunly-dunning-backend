@@ -123,10 +123,33 @@ metricsRouter.get("/", async (req, res, next) => {
       };
     });
 
+    // Pre-dunning (phase 4): prevented failures this month + cards being
+    // watched. Same single-currency doctrine — the amount only sums the
+    // primary currency.
+    const expiryCases = connection
+      ? await prisma.cardExpiryCase.findMany({
+          where: { connectionId: connection.id },
+          select: { status: true, protectedAmount: true, currency: true, resolvedAt: true },
+        })
+      : [];
+    const preventedThisMonth = expiryCases.filter(
+      (c) =>
+        c.status === "RESOLVED" &&
+        c.resolvedAt &&
+        c.resolvedAt >= monthStart &&
+        c.currency === currency,
+    );
+    const watching = expiryCases.filter((c) => c.status === "OPEN").length;
+
     res.json({
       currency,
       timezone,
       periodStart: monthStart.toISOString(),
+      prevented: {
+        cards: preventedThisMonth.length,
+        amount: preventedThisMonth.reduce((s, c) => s + c.protectedAmount, 0),
+      },
+      watching,
       recovered: {
         thisMonth: recoveredThisMonth.reduce((s, c) => s + c.amountDue, 0),
         allTime: recoveredCases.reduce((s, c) => s + c.amountDue, 0),
@@ -202,7 +225,9 @@ metricsRouter.get("/email-performance", async (req, res, next) => {
     for (const s of sends) {
       const row = stages.get(s.stageOrder)!;
       if (s.status === "SCHEDULED") row.pending++;
-      if (s.sentAt) {
+      // dunningCaseId is non-null here (the query filters on the relation);
+      // the column went optional when PRE_DUNNING sends arrived in Phase 4.
+      if (s.sentAt && s.dunningCaseId) {
         row.sent++;
         const list = sendsByCase.get(s.dunningCaseId) ?? [];
         list.push({ stageOrder: s.stageOrder, sentAt: s.sentAt });

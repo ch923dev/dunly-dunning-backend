@@ -94,6 +94,122 @@ redirectsRouter.post("/unsubscribe/:token", async (req: Request, res: Response) 
   res.status(200).end();
 });
 
+// ---------------------------------------------------------------------------
+// Pre-dunning (phase 4): expiry-case-scoped links. Same doctrine, different
+// subject — the token carries a CardExpiryCase id.
+// ---------------------------------------------------------------------------
+
+async function unsubscribeExpiry(expiryCaseId: string) {
+  const expiryCase = await prisma.cardExpiryCase.findUnique({
+    where: { id: expiryCaseId },
+    include: { customer: true, connection: true },
+  });
+  if (!expiryCase) return null;
+
+  const email = expiryCase.customer.email;
+  if (email) {
+    await prisma.suppressionEntry.upsert({
+      where: {
+        organizationId_email: {
+          organizationId: expiryCase.connection.organizationId,
+          email,
+        },
+      },
+      create: {
+        organizationId: expiryCase.connection.organizationId,
+        email,
+        reason: "UNSUBSCRIBED",
+      },
+      update: {},
+    });
+
+    // Advisory fast path (guard-at-send stays the authority): cancel every
+    // pending send for this address across the workspace — pre-dunning AND
+    // dunning — and flip live dunning cases, exactly as the send guard would.
+    await prisma.emailSend.updateMany({
+      where: {
+        status: "SCHEDULED",
+        OR: [
+          { cardExpiryCase: { connectionId: expiryCase.connectionId, customer: { email } } },
+          { dunningCase: { connectionId: expiryCase.connectionId, customer: { email } } },
+        ],
+      },
+      data: { status: "CANCELED", error: "customer unsubscribed" },
+    });
+    await prisma.dunningCase.updateMany({
+      where: { connectionId: expiryCase.connectionId, customer: { email }, status: "ACTIVE" },
+      data: { status: "SUPPRESSED" },
+    });
+  } else {
+    await prisma.emailSend.updateMany({
+      where: { cardExpiryCaseId: expiryCase.id, status: "SCHEDULED" },
+      data: { status: "CANCELED", error: "customer unsubscribed" },
+    });
+  }
+
+  // The expiry case itself stays OPEN (phase-4 locked decision #6): a
+  // customer we can't email can still update their card, and the prevented
+  // metric should record it honestly.
+  return expiryCase;
+}
+
+redirectsRouter.get("/expiry/unsubscribe/:token", async (req: Request, res: Response) => {
+  const expiryCaseId = verifyCaseToken(String(req.params.token), "expiry-unsubscribe");
+  const expiryCase = expiryCaseId ? await unsubscribeExpiry(expiryCaseId) : null;
+  if (!expiryCase) {
+    res.status(404).send(page("This link isn't valid", "The unsubscribe link is incomplete or expired."));
+    return;
+  }
+  res.send(
+    page(
+      "You're unsubscribed",
+      "You won't receive any more card or payment reminder emails about this subscription.",
+    ),
+  );
+});
+
+// RFC 8058 one-click unsubscribe, same as the dunning variant.
+redirectsRouter.post("/expiry/unsubscribe/:token", async (req: Request, res: Response) => {
+  const expiryCaseId = verifyCaseToken(String(req.params.token), "expiry-unsubscribe");
+  if (!expiryCaseId || !(await unsubscribeExpiry(expiryCaseId))) {
+    res.status(404).end();
+    return;
+  }
+  res.status(200).end();
+});
+
+redirectsRouter.get("/expiry/portal/:token", async (req: Request, res: Response) => {
+  const expiryCaseId = verifyCaseToken(String(req.params.token), "expiry-portal");
+  const expiryCase = expiryCaseId
+    ? await prisma.cardExpiryCase.findUnique({
+        where: { id: expiryCaseId },
+        include: { customer: true, connection: true },
+      })
+    : null;
+  if (!expiryCase) {
+    res.status(404).send(page("This link isn't valid", "The link is incomplete or expired."));
+    return;
+  }
+
+  try {
+    const url = await createPortalLink({
+      stripeCustomerId: expiryCase.customer.stripeCustomerId,
+      stripeAccountId: expiryCase.connection.stripeAccountId,
+    });
+    res.redirect(302, url);
+  } catch (err) {
+    console.error(`[redirects] portal session failed for expiry case ${expiryCase.id}:`, err);
+    res
+      .status(502)
+      .send(
+        page(
+          "Billing portal unavailable",
+          "We couldn't open the card management portal right now. Please try again shortly.",
+        ),
+      );
+  }
+});
+
 redirectsRouter.get("/portal/:token", async (req: Request, res: Response) => {
   const caseId = verifyCaseToken(String(req.params.token), "portal");
   const dunningCase = caseId

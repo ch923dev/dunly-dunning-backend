@@ -9,6 +9,7 @@ import { portalRouter } from "./routes/portal.js";
 import { workspaceRouter } from "./routes/workspace.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { casesRouter } from "./routes/cases.js";
+import { expiringCardsRouter } from "./routes/expiring-cards.js";
 import { campaignRouter } from "./routes/campaign.js";
 import { templatesRouter } from "./routes/templates.js";
 import { stripeRouter } from "./routes/stripe.js";
@@ -55,6 +56,7 @@ export function createApp() {
   api.use("/workspace", workspaceRouter);
   api.use("/metrics", metricsRouter);
   api.use("/cases", casesRouter);
+  api.use("/expiring-cards", expiringCardsRouter);
   api.use("/campaign", campaignRouter);
   api.use(templatesRouter); // POST /api/preview · POST /api/test-send
   api.use("/stripe", stripeRouter);

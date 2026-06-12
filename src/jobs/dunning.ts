@@ -22,6 +22,7 @@ import {
 } from "../lib/email.js";
 import { makeCaseToken } from "../lib/tokens.js";
 import { clampToWindow, hourInZone, isInWindow } from "../lib/send-window.js";
+import { deliverExpiryEmail } from "./expiry.js";
 import { env } from "../env.js";
 
 /** Statuses meaning "this stage already left the building" — never reschedule. */
@@ -299,6 +300,11 @@ export async function deliverScheduledEmail(emailSendId: string) {
   });
   if (!send) return;
   if (send.status !== "SCHEDULED") return; // sent or canceled — done
+
+  // PRE_DUNNING sends take the phase-4 expiry path (separate guards, merge
+  // vars and tokens); the dunning kinds always carry a case.
+  if (send.kind === "PRE_DUNNING") return deliverExpiryEmail(send.id);
+  if (!send.dunningCase) return;
 
   const dunningCase = send.dunningCase;
   const cancel = async (reason: string) => {

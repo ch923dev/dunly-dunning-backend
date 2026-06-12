@@ -64,6 +64,41 @@ export const SAMPLE_PROPS: DunningEmailProps = {
   unsubscribeUrl: "http://localhost:4000/r/unsubscribe/sample-token",
 };
 
+/**
+ * Render data for the pre-dunning (card-expiry) templates — phase-4 spec,
+ * locked decision #7. No amounts, no invoice: there's nothing owed yet, and
+ * the copy must stay service-continuity, never charge-reminder.
+ */
+export interface ExpiryEmailProps {
+  customerName: string | null;
+  companyName: string;
+  planName: string | null;
+  /** Display-ready, e.g. "Visa" (src/lib/predunning.ts formatCardBrand). */
+  cardBrand: string | null;
+  cardLast4: string | null;
+  /** Display-ready, e.g. "June 2026" (formatCardExpiry). */
+  cardExpiry: string;
+  brandColor: string | null;
+  logoUrl: string | null;
+  /** Dunly redirect that mints a fresh Stripe portal session on click. */
+  updateUrl: string;
+  unsubscribeUrl: string;
+}
+
+/** Used by the react-email preview server and the preview script. */
+export const SAMPLE_EXPIRY_PROPS: ExpiryEmailProps = {
+  customerName: "Jamie",
+  companyName: "Acme Analytics",
+  planName: "Growth",
+  cardBrand: "Visa",
+  cardLast4: "4242",
+  cardExpiry: "June 2026",
+  brandColor: DEFAULT_BRAND_COLOR,
+  logoUrl: null,
+  updateUrl: "http://localhost:4000/r/expiry/portal/sample-token",
+  unsubscribeUrl: "http://localhost:4000/r/expiry/unsubscribe/sample-token",
+};
+
 export function greet(name: string | null) {
   return name ? `Hi ${name},` : "Hi,";
 }

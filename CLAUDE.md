@@ -17,7 +17,9 @@ npm run email:dev                # React Email preview on :3000
 stripe listen --forward-to localhost:4000/webhooks/stripe   # webhook tunnel
 ```
 
-Test/replay scripts (all `npx tsx scripts/<name>.ts`): `create-failing-subscription`, `pay-invoice`, `cancel-subscription`, `send-synthetic-event`, `send-synthetic-resend-event`, `send-test-email`, `process-one`, `ensure-default-campaigns`.
+Test/replay scripts (all `npx tsx scripts/<name>.ts`): `create-failing-subscription`, `pay-invoice`, `cancel-subscription`, `send-synthetic-event`, `send-synthetic-resend-event`, `send-test-email`, `process-one`, `ensure-default-campaigns`, and (phase 4) `create-expiring-card-customer` (`--extra-sub`), `run-expiry-scan`, `update-card-expiry`, `add-failing-subscription`, `print-expiry-links`, `render-expiry-preview`.
+
+**Dev server reload gotcha:** `npm run dev` may be started as plain `tsx` (no watch) in this environment — after backend edits or `db:generate`, restart it manually or workers run stale code (symptom: Prisma enum errors from the send worker).
 
 ## Layout
 

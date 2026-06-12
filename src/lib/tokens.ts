@@ -6,8 +6,12 @@ import { env } from "../env.js";
  * (phase-1 spec "Email layer"). Purpose-scoped so an unsubscribe token can
  * never be replayed against the portal route. No expiry on purpose: footer
  * links must keep working for as long as the email sits in an inbox.
+ *
+ * The expiry-* purposes (phase 4) carry a CardExpiryCase id instead of a
+ * DunningCase id — the purpose string in the HMAC keeps the namespaces
+ * mutually unforgeable.
  */
-export type CaseTokenPurpose = "unsubscribe" | "portal";
+export type CaseTokenPurpose = "unsubscribe" | "portal" | "expiry-unsubscribe" | "expiry-portal";
 
 function sign(caseId: string, purpose: CaseTokenPurpose): string {
   return createHmac("sha256", env.BETTER_AUTH_SECRET)

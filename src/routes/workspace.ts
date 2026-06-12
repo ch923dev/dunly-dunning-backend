@@ -26,6 +26,8 @@ async function workspacePayload(organizationId: string, role: string) {
           brandColor: org.settings.brandColor,
           replyTo: org.settings.replyTo,
           timezone: org.settings.timezone,
+          expiryTouch1Enabled: org.settings.expiryTouch1Enabled,
+          expiryTouch2Enabled: org.settings.expiryTouch2Enabled,
         }
       : null,
   };
@@ -59,6 +61,10 @@ const patchSchema = z.object({
     .string()
     .refine((tz) => TIMEZONES.has(tz), "unknown IANA timezone")
     .optional(),
+  // Pre-dunning per-touch enables (phase-4 locked decision #8). Disabling
+  // after touches are scheduled is honored by the send-time guard.
+  expiryTouch1Enabled: z.boolean().optional(),
+  expiryTouch2Enabled: z.boolean().optional(),
 });
 
 const emptyToNull = (v: string | null) => (v === "" ? null : v);
@@ -87,11 +93,20 @@ workspaceRouter.patch("/", requireOwner, async (req, res, next) => {
       });
     }
 
-    const settings: { logoUrl?: string | null; brandColor?: string | null; replyTo?: string | null; timezone?: string } = {};
+    const settings: {
+      logoUrl?: string | null;
+      brandColor?: string | null;
+      replyTo?: string | null;
+      timezone?: string;
+      expiryTouch1Enabled?: boolean;
+      expiryTouch2Enabled?: boolean;
+    } = {};
     if (input.logoUrl !== undefined) settings.logoUrl = emptyToNull(input.logoUrl);
     if (input.brandColor !== undefined) settings.brandColor = emptyToNull(input.brandColor);
     if (input.replyTo !== undefined) settings.replyTo = emptyToNull(input.replyTo);
     if (input.timezone !== undefined) settings.timezone = input.timezone;
+    if (input.expiryTouch1Enabled !== undefined) settings.expiryTouch1Enabled = input.expiryTouch1Enabled;
+    if (input.expiryTouch2Enabled !== undefined) settings.expiryTouch2Enabled = input.expiryTouch2Enabled;
     if (Object.keys(settings).length > 0) {
       await prisma.workspaceSettings.upsert({
         where: { organizationId },

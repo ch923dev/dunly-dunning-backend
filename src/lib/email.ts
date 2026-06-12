@@ -2,12 +2,14 @@ import { createElement, type ReactElement } from "react";
 import { render } from "@react-email/components";
 import { resend } from "./resend.js";
 import { env } from "../env.js";
-import type { DunningEmailProps } from "../emails/components/layout.js";
+import type { DunningEmailProps, ExpiryEmailProps } from "../emails/components/layout.js";
 import PaymentFailed1 from "../emails/payment-failed-1.js";
 import PaymentFailed2 from "../emails/payment-failed-2.js";
 import PaymentFailed3 from "../emails/payment-failed-3.js";
 import PaymentFailed4 from "../emails/payment-failed-4.js";
 import Reactivation from "../emails/reactivation.js";
+import CardExpiry1 from "../emails/card-expiry-1.js";
+import CardExpiry2 from "../emails/card-expiry-2.js";
 import CustomBody from "../emails/custom-body.js";
 
 /** templateKey (DunningStep / campaigns.ts) → React Email component. */
@@ -17,6 +19,12 @@ const TEMPLATES: Record<string, (props: DunningEmailProps) => ReactElement> = {
   "payment-failed-3": PaymentFailed3,
   "payment-failed-4": PaymentFailed4,
   reactivation: Reactivation,
+};
+
+/** Pre-dunning templateKey (lib/predunning.ts) → component — phase 4. */
+const EXPIRY_TEMPLATES: Record<string, (props: ExpiryEmailProps) => ReactElement> = {
+  "card-expiry-1": CardExpiry1,
+  "card-expiry-2": CardExpiry2,
 };
 
 export function isKnownTemplate(templateKey: string): boolean {
@@ -91,6 +99,19 @@ export async function renderDunningEmail(
     if (!Template) throw new Error(`Unknown email template: ${templateKey}`);
     element = createElement(Template, props);
   }
+  return {
+    html: await render(element),
+    text: await render(element, { plainText: true }),
+  };
+}
+
+export async function renderExpiryEmail(
+  templateKey: string,
+  props: ExpiryEmailProps,
+): Promise<RenderedEmail> {
+  const Template = EXPIRY_TEMPLATES[templateKey];
+  if (!Template) throw new Error(`Unknown expiry email template: ${templateKey}`);
+  const element = createElement(Template, props);
   return {
     html: await render(element),
     text: await render(element, { plainText: true }),

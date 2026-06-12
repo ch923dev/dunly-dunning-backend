@@ -19,6 +19,8 @@ export const QUEUES = {
   dunningSequence: "dunning.sequence",
   /** Phase 1: send a single dunning email (one EmailSend). */
   sendDunningEmail: "dunning.send-email",
+  /** Phase 4: daily card-expiry scan + sweep across all CONNECTED accounts. */
+  expiryScan: "expiry.scan",
 } as const;
 
 /**
@@ -53,4 +55,9 @@ export interface DunningSequenceJob {
 
 export interface SendDunningEmailJob {
   emailSendId: string;
+}
+
+export interface ExpiryScanJob {
+  /** "cron" for the daily schedule, "manual" for the dev script. */
+  trigger: "cron" | "manual";
 }

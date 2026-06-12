@@ -4,11 +4,13 @@ import { createApp } from "./app.js";
 import { boss } from "./lib/queue.js";
 import { registerEventWorkers } from "./jobs/process-events.js";
 import { registerDunningWorkers } from "./jobs/dunning.js";
+import { registerExpiryWorkers } from "./jobs/expiry.js";
 
 async function main() {
   await boss.start();
   await registerEventWorkers();
   await registerDunningWorkers();
+  await registerExpiryWorkers();
 
   const app = createApp();
   const server = app.listen(env.PORT, () => {

@@ -136,6 +136,10 @@ model WorkspaceSettings {
   brandColor     String?
   replyTo        String?
   timezone       String       @default("UTC")
+  /// Pre-dunning per-touch enables (phase-4, locked decision #8). Both off =
+  /// feature off; the scan still watches and resolves, it just never emails.
+  expiryTouch1Enabled Boolean @default(true)
+  expiryTouch2Enabled Boolean @default(true)
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 }
@@ -163,8 +167,9 @@ model StripeConnection {
   connectedAt     DateTime         @default(now())
   disconnectedAt  DateTime?
 
-  customers Customer[]
-  cases     DunningCase[]
+  customers   Customer[]
+  cases       DunningCase[]
+  expiryCases CardExpiryCase[]
 }
 
 enum ConnectionStatus {
@@ -230,6 +235,7 @@ model Customer {
 
   subscriptions Subscription[]
   cases         DunningCase[]
+  expiryCases   CardExpiryCase[]
 
   @@unique([connectionId, stripeCustomerId])
 }
@@ -354,9 +360,14 @@ model DunningStep {
 /// constraint — exists from Phase 0 (product plan §7.2).
 model EmailSend {
   id            String          @id @default(cuid())
-  dunningCaseId String
-  dunningCase   DunningCase     @relation(fields: [dunningCaseId], references: [id], onDelete: Cascade)
-  /// REACTIVATION uses reserved stageOrder 100 (src/lib/campaigns.ts).
+  /// Exactly one parent: dunningCaseId for SEQUENCE/REACTIVATION,
+  /// cardExpiryCaseId for PRE_DUNNING (phase-4, locked decision #3).
+  dunningCaseId String?
+  dunningCase   DunningCase?    @relation(fields: [dunningCaseId], references: [id], onDelete: Cascade)
+  cardExpiryCaseId String?
+  cardExpiryCase   CardExpiryCase? @relation(fields: [cardExpiryCaseId], references: [id], onDelete: Cascade)
+  /// REACTIVATION uses reserved stageOrder 100 (src/lib/campaigns.ts);
+  /// PRE_DUNNING uses 201/202 (src/lib/predunning.ts).
   kind          EmailSendKind   @default(SEQUENCE)
   stageOrder    Int
   toEmail       String?
@@ -372,11 +383,14 @@ model EmailSend {
 
   /// Last line of defense: an invoice can never receive the same stage twice.
   @@unique([dunningCaseId, stageOrder])
+  /// Same defense for pre-dunning: one touch per expiry case, ever.
+  @@unique([cardExpiryCaseId, stageOrder])
 }
 
 enum EmailSendKind {
   SEQUENCE
   REACTIVATION
+  PRE_DUNNING
 }
 
 enum EmailSendStatus {
@@ -386,6 +400,52 @@ enum EmailSendStatus {
   OPENED
   CLICKED
   BOUNCED
+  CANCELED
+}
+
+// ---------------------------------------------------------------------------
+// Pre-dunning domain (phase 4) — card-expiry prevention
+// ---------------------------------------------------------------------------
+
+/// An expiring default card we are watching — one case per
+/// (customer, payment method, expiry month), so a customer with several
+/// subscriptions on one card gets one case and one set of emails
+/// (phase-4 spec, locked decision #2).
+model CardExpiryCase {
+  id                    String           @id @default(cuid())
+  connectionId          String
+  connection            StripeConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  customerId            String
+  customer              Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  stripePaymentMethodId String
+  cardBrand             String?
+  cardLast4             String?
+  expMonth              Int
+  expYear               Int
+  status                CardExpiryStatus @default(OPEN)
+  /// Snapshot at open: sum of the customer's matched subscription amounts
+  /// (minor units) — what a RESOLVED case protected.
+  protectedAmount       Int
+  currency              String
+  openedAt              DateTime         @default(now())
+  resolvedAt            DateTime?
+  closedAt              DateTime?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  emailSends EmailSend[]
+
+  @@unique([customerId, stripePaymentMethodId, expYear, expMonth])
+  @@index([connectionId, status])
+}
+
+/// RESOLVED = card updated before the month ended (a prevented failure).
+/// LAPSED books no loss — if the charge later fails, dunning owns it
+/// (no double-counting between prevented and recovered).
+enum CardExpiryStatus {
+  OPEN
+  RESOLVED
+  LAPSED
   CANCELED
 }
 
