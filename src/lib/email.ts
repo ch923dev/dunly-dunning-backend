@@ -54,6 +54,36 @@ export function applyMergeVars(template: string, vars: Record<string, string>): 
   return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => vars[key] ?? match);
 }
 
+/**
+ * The merge variables the dunning send path actually provides
+ * (jobs/dunning.ts mergeVars) — mirrored by the UI editor's MERGE_VARS
+ * buttons. Kept in sync manually; a drift shows up as a save-time 400.
+ */
+export const SEQUENCE_MERGE_VARS: ReadonlySet<string> = new Set([
+  "company_name",
+  "customer_name",
+  "amount_due",
+  "plan_name",
+  "update_payment_link",
+]);
+
+/**
+ * Unknown {{vars}} in a template. Anything not in `known` would ship to
+ * customers as a literal "{{typo}}" (audit B15) — callers reject at save
+ * time instead.
+ */
+export function findUnknownMergeVars(
+  template: string,
+  known: ReadonlySet<string> = SEQUENCE_MERGE_VARS,
+): string[] {
+  const unknown = new Set<string>();
+  for (const match of template.matchAll(/\{\{(\w+)\}\}/g)) {
+    const key = match[1] ?? "";
+    if (key && !known.has(key)) unknown.add(key);
+  }
+  return [...unknown];
+}
+
 const HTML_ESCAPES: Record<string, string> = {
   "&": "&amp;",
   "<": "&lt;",

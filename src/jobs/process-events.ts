@@ -1,4 +1,4 @@
-import type Stripe from "stripe";
+import Stripe from "stripe";
 import { boss, ensureQueue, QUEUES, type ProcessEventJob } from "../lib/queue.js";
 import { prisma } from "../lib/prisma.js";
 import { stripe } from "../lib/stripe.js";
@@ -164,6 +164,11 @@ async function handleInvoicePaymentFailed(
               recoveredAt: null,
               closedAt: null,
               failedAt: new Date(event.created * 1000),
+              // A re-failure can bill a different amount (audit B14) —
+              // refresh so emails and the amount threshold use the fresh
+              // figure instead of the recovered episode's stale one.
+              amountDue: invoice.amount_due,
+              currency: invoice.currency,
             }
           : {}),
       },
@@ -378,6 +383,11 @@ async function syncSubscription(
       },
     });
   } catch (err) {
+    // Best-effort holds only for Stripe API failures (revoked connection,
+    // rate limit, deleted subscription) — degraded personalization, not a
+    // failed case. Anything else is a programming error and must surface
+    // (audit B9).
+    if (!(err instanceof Stripe.errors.StripeError)) throw err;
     console.warn(`[events] subscription sync failed for ${stripeSubscriptionId}:`, err);
   }
 }
@@ -402,5 +412,11 @@ function mapSubscriptionStatus(
       return "TRIALING";
     case "paused":
       return "PAUSED";
+    default:
+      // A Stripe API version can introduce statuses this build doesn't know
+      // (audit B13). The mirror is advisory (plan-name personalization), so
+      // log loudly and store ACTIVE rather than returning undefined.
+      console.warn(`[events] unknown Stripe subscription status "${String(status)}" — mirroring as ACTIVE`);
+      return "ACTIVE";
   }
 }

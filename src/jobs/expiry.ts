@@ -1,4 +1,4 @@
-import type Stripe from "stripe";
+import Stripe from "stripe";
 import { boss, ensureQueue, QUEUES, type ExpiryScanJob, type SendDunningEmailJob } from "../lib/queue.js";
 import { prisma } from "../lib/prisma.js";
 import { stripe } from "../lib/stripe.js";
@@ -125,8 +125,19 @@ export async function checkExpiryCase(
   let pm: Stripe.PaymentMethod;
   try {
     pm = await stripe.paymentMethods.retrieve(expiryCase.stripePaymentMethodId, undefined, account);
-  } catch {
-    return { outcome: "resolved", reason: "card removed" };
+  } catch (err) {
+    // Only a genuinely-missing payment method counts as handled (audit B1).
+    // A transient failure (rate limit, 5xx, network) must NOT close the
+    // case as a prevented failure — rethrow so the sweep logs and retries
+    // next run, and a send-guard call fails the job so the touch stays
+    // SCHEDULED for the pg-boss retry.
+    if (
+      err instanceof Stripe.errors.StripeInvalidRequestError &&
+      (err.code === "resource_missing" || err.statusCode === 404)
+    ) {
+      return { outcome: "resolved", reason: "card removed" };
+    }
+    throw err;
   }
   const card = pm.card;
   if (!card) return { outcome: "resolved", reason: "payment method changed" };

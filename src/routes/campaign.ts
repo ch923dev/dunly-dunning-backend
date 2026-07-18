@@ -9,6 +9,7 @@ import {
   REACTIVATION_TEMPLATE_KEY,
 } from "../lib/campaigns.js";
 import { sanitizeEmailBody } from "../lib/sanitize.js";
+import { findUnknownMergeVars, SEQUENCE_MERGE_VARS } from "../lib/email.js";
 import type { DunningStep } from "../generated/prisma/client.js";
 
 export const campaignRouter = Router();
@@ -86,6 +87,22 @@ campaignRouter.patch("/steps/:id", requireOwner, async (req, res, next) => {
       return;
     }
     const input = parsed.data;
+
+    // Subjects have no live-preview safety net the way bodies do — an
+    // unknown {{var}} would ship to customers literally (audit B15).
+    if (input.subject !== undefined) {
+      const unknown = findUnknownMergeVars(input.subject);
+      if (unknown.length > 0) {
+        res.status(400).json({
+          error: "validation",
+          details: unknown.map((v) => ({
+            field: "subject",
+            message: `unknown merge variable {{${v}}} — supported: ${[...SEQUENCE_MERGE_VARS].map((k) => `{{${k}}}`).join(", ")}`,
+          })),
+        });
+        return;
+      }
+    }
 
     const stepId = typeof req.params.id === "string" ? req.params.id : "";
     const step = await findOwnStep(stepId, organizationId);
