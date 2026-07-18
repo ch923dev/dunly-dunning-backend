@@ -140,6 +140,10 @@ model WorkspaceSettings {
   /// feature off; the scan still watches and resolves, it just never emails.
   expiryTouch1Enabled Boolean @default(true)
   expiryTouch2Enabled Boolean @default(true)
+  /// Stop-on-reply (phase-5, locked decision #10). Off = Reply-To falls back
+  /// to the merchant's replyTo on future sends; in-flight reply addresses
+  /// still land and still pause.
+  stopOnReplyEnabled Boolean @default(true)
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 }
@@ -299,6 +303,7 @@ model DunningCase {
   updatedAt            DateTime         @updatedAt
 
   emailSends EmailSend[]
+  replies    CaseReply[]
 
   @@index([connectionId, status])
   @@index([customerId])
@@ -361,13 +366,19 @@ model DunningStep {
 model EmailSend {
   id            String          @id @default(cuid())
   /// Exactly one parent: dunningCaseId for SEQUENCE/REACTIVATION,
-  /// cardExpiryCaseId for PRE_DUNNING (phase-4, locked decision #3).
+  /// cardExpiryCaseId for PRE_DUNNING (phase-4, locked decision #3),
+  /// caseReplyId for REPLY_FORWARD (phase-5, locked decision #6 —
+  /// dunningCaseId stays null so multiple replies per case never collide
+  /// on the (dunningCaseId, stageOrder) unique).
   dunningCaseId String?
   dunningCase   DunningCase?    @relation(fields: [dunningCaseId], references: [id], onDelete: Cascade)
   cardExpiryCaseId String?
   cardExpiryCase   CardExpiryCase? @relation(fields: [cardExpiryCaseId], references: [id], onDelete: Cascade)
+  caseReplyId String?    @unique
+  caseReply   CaseReply? @relation(fields: [caseReplyId], references: [id], onDelete: Cascade)
   /// REACTIVATION uses reserved stageOrder 100 (src/lib/campaigns.ts);
-  /// PRE_DUNNING uses 201/202 (src/lib/predunning.ts).
+  /// PRE_DUNNING uses 201/202 (src/lib/predunning.ts); REPLY_FORWARD
+  /// uses 300 (src/lib/replies.ts).
   kind          EmailSendKind   @default(SEQUENCE)
   stageOrder    Int
   toEmail       String?
@@ -391,6 +402,7 @@ enum EmailSendKind {
   SEQUENCE
   REACTIVATION
   PRE_DUNNING
+  REPLY_FORWARD
 }
 
 enum EmailSendStatus {
@@ -447,6 +459,43 @@ enum CardExpiryStatus {
   RESOLVED
   LAPSED
   CANCELED
+}
+
+// ---------------------------------------------------------------------------
+// Reply intelligence (phase 5) — stop-on-reply
+// ---------------------------------------------------------------------------
+
+/// An inbound customer reply to a dunning email (Resend Inbound →
+/// email.received). Every reply is persisted — HUMAN replies pause the case
+/// and get forwarded; AUTO replies (out-of-office etc.) are stored for the
+/// timeline but never act (phase-5 spec, locked decisions #3–5).
+model CaseReply {
+  id              String              @id @default(cuid())
+  dunningCaseId   String
+  dunningCase     DunningCase         @relation(fields: [dunningCaseId], references: [id], onDelete: Cascade)
+  /// Resend inbound email id — UNIQUE absorbs webhook redelivery, same
+  /// doctrine as WebhookEvent.stripeEventId.
+  resendInboundId String              @unique
+  fromEmail       String?
+  subject         String?
+  /// Plain text only, capped at 10k chars. HTML is dropped — the forward
+  /// quotes text, so hostile customer HTML never replays into an inbox.
+  textBody        String?
+  classification  ReplyClassification
+  /// Which auto-reply header tripped (AUTO only).
+  autoReason      String?
+  /// Did THIS reply flip the case ACTIVE → PAUSED?
+  pausedCase      Boolean             @default(false)
+  receivedAt      DateTime            @default(now())
+
+  forwardSend EmailSend?
+
+  @@index([dunningCaseId, receivedAt])
+}
+
+enum ReplyClassification {
+  HUMAN
+  AUTO
 }
 
 /// Workspace-scoped do-not-email list (product plan §5.7). Blocks sends for

@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { createPortalLink } from "../lib/stripe.js";
 import { verifyCaseToken } from "../lib/tokens.js";
+import { enqueueSequence } from "../jobs/dunning.js";
 
 /**
  * Public, login-free redirect endpoints behind the email footer links
@@ -208,6 +209,90 @@ redirectsRouter.get("/expiry/portal/:token", async (req: Request, res: Response)
         ),
       );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Reply intelligence (phase 5): one-tap merchant actions from the
+// reply-forward email. Same guarded transitions as the session API
+// endpoints (POST /api/cases/:id/resume|stop); the HMAC token is the
+// authentication. Idempotent: a second click reports the state honestly.
+// ---------------------------------------------------------------------------
+
+const prettyStatus = (status: string) => status.toLowerCase().replaceAll("_", " ");
+
+redirectsRouter.get("/case/resume/:token", async (req: Request, res: Response) => {
+  const caseId = verifyCaseToken(String(req.params.token), "case-resume");
+  const dunningCase = caseId
+    ? await prisma.dunningCase.findUnique({ where: { id: caseId } })
+    : null;
+  if (!dunningCase) {
+    res.status(404).send(page("This link isn't valid", "The resume link is incomplete or expired."));
+    return;
+  }
+
+  const { count } = await prisma.dunningCase.updateMany({
+    where: { id: dunningCase.id, status: "PAUSED" },
+    data: { status: "ACTIVE" },
+  });
+  if (count === 0) {
+    res.send(
+      page(
+        "Nothing to resume",
+        dunningCase.status === "ACTIVE"
+          ? "This sequence is already running — maybe you clicked twice."
+          : `This case is ${prettyStatus(dunningCase.status)}, so the sequence can't resume.`,
+      ),
+    );
+    return;
+  }
+
+  // One idempotent kick re-enqueues every held send (phase-3 self-heal path).
+  await enqueueSequence(dunningCase.id);
+  console.log(`[redirects] resumed case ${dunningCase.id} via reply-forward link`);
+  res.send(
+    page(
+      "Sequence resumed",
+      "Recovery emails for this case are running again. Held emails will go out on their schedule.",
+    ),
+  );
+});
+
+redirectsRouter.get("/case/stop/:token", async (req: Request, res: Response) => {
+  const caseId = verifyCaseToken(String(req.params.token), "case-stop");
+  const dunningCase = caseId
+    ? await prisma.dunningCase.findUnique({ where: { id: caseId } })
+    : null;
+  if (!dunningCase) {
+    res.status(404).send(page("This link isn't valid", "The stop link is incomplete or expired."));
+    return;
+  }
+
+  // Same semantics as the API stop: abandoning an involuntary failure is an
+  // involuntary loss (phase-3 locked decision #4). Irreversible.
+  const { count } = await prisma.dunningCase.updateMany({
+    where: { id: dunningCase.id, status: { in: ["ACTIVE", "PAUSED"] } },
+    data: { status: "LOST_INVOLUNTARY", closedAt: new Date() },
+  });
+  if (count === 0) {
+    res.send(
+      page(
+        "Nothing to stop",
+        `This case is already ${prettyStatus(dunningCase.status)} — no emails were pending.`,
+      ),
+    );
+    return;
+  }
+  await prisma.emailSend.updateMany({
+    where: { dunningCaseId: dunningCase.id, status: "SCHEDULED" },
+    data: { status: "CANCELED", error: "stopped from reply forward" },
+  });
+  console.log(`[redirects] stopped case ${dunningCase.id} via reply-forward link (marked lost)`);
+  res.send(
+    page(
+      "Sequence stopped",
+      "The case is closed and marked lost — no more recovery emails will be sent for this invoice.",
+    ),
+  );
 });
 
 redirectsRouter.get("/portal/:token", async (req: Request, res: Response) => {

@@ -144,7 +144,9 @@ type TimelineEvent = {
     | "canceled"
     | "suppressed"
     | "recovered"
-    | "lost";
+    | "lost"
+    | "replied"
+    | "auto-reply";
   at: Date;
   title: string;
   detail: string | null;
@@ -167,6 +169,7 @@ casesRouter.get("/:id", async (req, res, next) => {
         customer: true,
         campaign: { include: { steps: { orderBy: { order: "asc" } } } },
         emailSends: { orderBy: { scheduledFor: "asc" } },
+        replies: { orderBy: { receivedAt: "asc" } },
       },
     });
     if (!c) {
@@ -234,6 +237,28 @@ casesRouter.get("/:id", async (req, res, next) => {
       }
     }
 
+    // Reply intelligence (phase-5): replies are rows we already need —
+    // the no-event-table doctrine holds. AUTO rows render muted; visibility
+    // beats silence.
+    for (const r of c.replies) {
+      const snippet = r.textBody ? r.textBody.slice(0, 140).replace(/\s+/g, " ").trim() : null;
+      if (r.classification === "HUMAN") {
+        events.push({
+          type: "replied",
+          at: r.receivedAt,
+          title: r.pausedCase ? "Customer replied — sequence paused" : "Customer replied",
+          detail: snippet ?? r.subject,
+        });
+      } else {
+        events.push({
+          type: "auto-reply",
+          at: r.receivedAt,
+          title: "Auto-reply filtered",
+          detail: r.autoReason,
+        });
+      }
+    }
+
     if (suppression) {
       events.push({
         type: "suppressed",
@@ -291,6 +316,15 @@ casesRouter.get("/:id", async (req, res, next) => {
         : null,
       sentCount: sequence.filter((s) => s.sentAt !== null).length,
       totalSteps: sequence.length,
+      replies: c.replies.map((r) => ({
+        id: r.id,
+        fromEmail: r.fromEmail,
+        subject: r.subject,
+        textBody: r.textBody,
+        classification: r.classification,
+        pausedCase: r.pausedCase,
+        receivedAt: r.receivedAt,
+      })),
       nextSend: nextPending
         ? {
             stageOrder: nextPending.stageOrder,

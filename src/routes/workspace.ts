@@ -28,6 +28,7 @@ async function workspacePayload(organizationId: string, role: string) {
           timezone: org.settings.timezone,
           expiryTouch1Enabled: org.settings.expiryTouch1Enabled,
           expiryTouch2Enabled: org.settings.expiryTouch2Enabled,
+          stopOnReplyEnabled: org.settings.stopOnReplyEnabled,
         }
       : null,
   };
@@ -65,6 +66,9 @@ const patchSchema = z.object({
   // after touches are scheduled is honored by the send-time guard.
   expiryTouch1Enabled: z.boolean().optional(),
   expiryTouch2Enabled: z.boolean().optional(),
+  // Stop-on-reply (phase-5 locked decision #10). Off changes Reply-To on
+  // future sends only; in-flight reply addresses still land and still pause.
+  stopOnReplyEnabled: z.boolean().optional(),
 });
 
 const emptyToNull = (v: string | null) => (v === "" ? null : v);
@@ -100,6 +104,7 @@ workspaceRouter.patch("/", requireOwner, async (req, res, next) => {
       timezone?: string;
       expiryTouch1Enabled?: boolean;
       expiryTouch2Enabled?: boolean;
+      stopOnReplyEnabled?: boolean;
     } = {};
     if (input.logoUrl !== undefined) settings.logoUrl = emptyToNull(input.logoUrl);
     if (input.brandColor !== undefined) settings.brandColor = emptyToNull(input.brandColor);
@@ -107,6 +112,7 @@ workspaceRouter.patch("/", requireOwner, async (req, res, next) => {
     if (input.timezone !== undefined) settings.timezone = input.timezone;
     if (input.expiryTouch1Enabled !== undefined) settings.expiryTouch1Enabled = input.expiryTouch1Enabled;
     if (input.expiryTouch2Enabled !== undefined) settings.expiryTouch2Enabled = input.expiryTouch2Enabled;
+    if (input.stopOnReplyEnabled !== undefined) settings.stopOnReplyEnabled = input.stopOnReplyEnabled;
     if (Object.keys(settings).length > 0) {
       await prisma.workspaceSettings.upsert({
         where: { organizationId },

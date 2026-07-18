@@ -98,6 +98,13 @@ export async function applyResendEvent(
         where: { id: send.id, status: { not: "CANCELED" } },
         data: { status: "BOUNCED" },
       });
+      // A bounced REPLY_FORWARD is merchant-bound mail (phase-5, locked
+      // decision #8): never suppress the merchant's address into the
+      // customer suppression list, never touch the case.
+      if (send.kind === "REPLY_FORWARD") {
+        console.warn(`[resend] reply forward ${send.id} bounced (merchant address unreachable)`);
+        return "applied";
+      }
       // Hard bounce → suppress the address workspace-wide. upsert update:{}
       // keeps an earlier UNSUBSCRIBED reason intact. The send's parent is
       // either a dunning case or an expiry case (phase 4) — same doctrine.

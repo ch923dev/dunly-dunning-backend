@@ -7,6 +7,7 @@ import {
   verifySvixSignature,
   type ResendWebhookEvent,
 } from "../lib/resend-events.js";
+import { handleInboundEmail, type InboundEmailData } from "../lib/replies.js";
 
 /**
  * Webhook ingestion — two entry points, one processor
@@ -95,7 +96,13 @@ webhooksRouter.post("/resend", async (req, res) => {
   }
 
   try {
-    const outcome = await applyResendEvent(event);
+    // Inbound replies (phase-5) are a new event type on the same plumbing:
+    // DB writes + one enqueue, no external calls — inline like the rest.
+    // A 500 makes Svix redeliver; the CaseReply unique absorbs it.
+    const outcome =
+      event.type === "email.received"
+        ? await handleInboundEmail((event.data ?? {}) as InboundEmailData)
+        : await applyResendEvent(event);
     console.log(`[resend] ${event.type} → ${outcome}`);
     res.json({ received: true, outcome });
   } catch (err) {

@@ -21,6 +21,12 @@ const envSchema = z.object({
   EMAIL_FROM: z.string().min(1),
   /** Svix signing secret for POST /webhooks/resend (optional until configured). */
   RESEND_WEBHOOK_SECRET: z.string().startsWith("whsec_").optional(),
+  /**
+   * Receiving domain for stop-on-reply addresses, e.g. reply.example.com
+   * (phase-5, locked decision #12). Unset = reply intelligence inert:
+   * Reply-To falls back to the merchant's own replyTo.
+   */
+  INBOUND_REPLY_DOMAIN: z.string().min(1).optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

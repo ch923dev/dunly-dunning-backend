@@ -23,6 +23,8 @@ import {
 import { makeCaseToken } from "../lib/tokens.js";
 import { clampToWindow, hourInZone, isInWindow } from "../lib/send-window.js";
 import { deliverExpiryEmail } from "./expiry.js";
+import { deliverReplyForward } from "./replies.js";
+import { makeReplyAddress } from "../lib/replies.js";
 import { env } from "../env.js";
 
 /** Statuses meaning "this stage already left the building" — never reschedule. */
@@ -302,8 +304,10 @@ export async function deliverScheduledEmail(emailSendId: string) {
   if (send.status !== "SCHEDULED") return; // sent or canceled — done
 
   // PRE_DUNNING sends take the phase-4 expiry path (separate guards, merge
-  // vars and tokens); the dunning kinds always carry a case.
+  // vars and tokens); REPLY_FORWARD takes the phase-5 merchant-notification
+  // path (thin guards). The dunning kinds always carry a case.
   if (send.kind === "PRE_DUNNING") return deliverExpiryEmail(send.id);
+  if (send.kind === "REPLY_FORWARD") return deliverReplyForward(send.id);
   if (!send.dunningCase) return;
 
   const dunningCase = send.dunningCase;
@@ -457,10 +461,16 @@ export async function deliverScheduledEmail(emailSendId: string) {
       bodyHtml,
     );
 
+    // Stop-on-reply (phase-5, locked decision #1): reroute replies through
+    // Dunly when the workspace toggle is on and the receiving domain is
+    // configured; otherwise byte-identical to the old behavior.
+    const replyAddress =
+      (settings?.stopOnReplyEnabled ?? true) ? makeReplyAddress(dunningCase.id) : null;
+
     const resendEmailId = await sendDunningEmail({
       to: toEmail,
       fromName: organization.name,
-      replyTo: settings?.replyTo ?? null,
+      replyTo: replyAddress ?? settings?.replyTo ?? null,
       subject,
       html,
       text,

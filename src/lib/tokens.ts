@@ -10,8 +10,17 @@ import { env } from "../env.js";
  * The expiry-* purposes (phase 4) carry a CardExpiryCase id instead of a
  * DunningCase id — the purpose string in the HMAC keeps the namespaces
  * mutually unforgeable.
+ *
+ * case-resume / case-stop (phase 5) are the one-tap action links in the
+ * reply-forward email — merchant-facing, but the same login-free doctrine.
  */
-export type CaseTokenPurpose = "unsubscribe" | "portal" | "expiry-unsubscribe" | "expiry-portal";
+export type CaseTokenPurpose =
+  | "unsubscribe"
+  | "portal"
+  | "expiry-unsubscribe"
+  | "expiry-portal"
+  | "case-resume"
+  | "case-stop";
 
 function sign(caseId: string, purpose: CaseTokenPurpose): string {
   return createHmac("sha256", env.BETTER_AUTH_SECRET)
