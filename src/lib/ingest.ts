@@ -11,6 +11,14 @@ export class InvalidSignatureError extends Error {
   }
 }
 
+/** A validly-signed event whose event.account contradicts the endpoint's
+ *  own connection (audit B10) — rejected rather than silently re-scoped. */
+export class AccountMismatchError extends Error {
+  constructor(eventAccount: string, pinnedAccount: string) {
+    super(`event.account ${eventAccount} does not match endpoint account ${pinnedAccount}`);
+  }
+}
+
 /**
  * The single ingestion path both webhook endpoints converge on
  * (docs/phase-0-foundation.md §3).
@@ -29,9 +37,14 @@ export async function ingestStripeEvent(opts: {
   rawBody: Buffer;
   signature: string;
   secret: string;
-  /** Direct (non-Connect) deliveries carry no event.account — the
-   *  per-workspace endpoint passes its connection's account id instead. */
-  fallbackAccountId?: string;
+  /**
+   * The per-workspace endpoint pins events to its own connection's account
+   * (audit B10): a validly-signed event carrying a *different*
+   * event.account is rejected, and direct (non-Connect) deliveries with no
+   * event.account are attributed to the pinned account. The platform
+   * Connect endpoint passes nothing and trusts event.account.
+   */
+  pinnedAccountId?: string;
 }): Promise<{ event: Stripe.Event; duplicate: boolean }> {
   let event: Stripe.Event;
   try {
@@ -40,12 +53,16 @@ export async function ingestStripeEvent(opts: {
     throw new InvalidSignatureError(err);
   }
 
+  if (opts.pinnedAccountId && event.account && event.account !== opts.pinnedAccountId) {
+    throw new AccountMismatchError(event.account, opts.pinnedAccountId);
+  }
+
   const { count } = await prisma.webhookEvent.createMany({
     data: [
       {
         stripeEventId: event.id,
         type: event.type,
-        stripeAccountId: event.account ?? opts.fallbackAccountId ?? null,
+        stripeAccountId: opts.pinnedAccountId ?? event.account ?? null,
         livemode: event.livemode,
         payload: event as unknown as Prisma.InputJsonValue,
       },

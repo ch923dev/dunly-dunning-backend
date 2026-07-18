@@ -2,14 +2,32 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { boss, QUEUES } from "../lib/queue.js";
 
+/**
+ * Public liveness probe (audit B11): status only — webhook counts, event
+ * timestamps, and queue depth are operational internals and live behind
+ * auth on /api/health instead.
+ */
 export const healthRouter = Router();
 
-/**
- * Health + webhook liveness. "A silent webhook bug = silently lost
- * recoveries" (product plan §7.4) — lastEventReceivedAt going stale on a
- * connected workspace is the cheapest possible alarm signal.
- */
 healthRouter.get("/", async (_req, res) => {
+  let database = "ok";
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch {
+    database = "unreachable";
+  }
+  res.json({ status: database === "ok" ? "ok" : "degraded", service: "dunly-backend" });
+});
+
+/**
+ * Detailed health + webhook liveness, mounted at /api/health behind session
+ * auth. "A silent webhook bug = silently lost recoveries" (product plan
+ * §7.4) — lastEventReceivedAt going stale on a connected workspace is the
+ * cheapest possible alarm signal.
+ */
+export const healthDetailsRouter = Router();
+
+healthDetailsRouter.get("/", async (_req, res) => {
   let database = "ok";
   let lastEventReceivedAt: Date | null = null;
   let eventCounts: Record<string, number> = {};

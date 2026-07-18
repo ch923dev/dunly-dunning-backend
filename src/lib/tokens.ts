@@ -13,6 +13,14 @@ import { env } from "../env.js";
  *
  * case-resume / case-stop (phase 5) are the one-tap action links in the
  * reply-forward email — merchant-facing, but the same login-free doctrine.
+ *
+ * Considered and deferred (audit B3): a soft expiry or per-case nonce for
+ * the destructive purposes (case-stop). Rejected for now because (a) stop
+ * and resume mutate only behind an explicit confirm-page POST (audit B4),
+ * (b) rate limiting bounds abuse of a leaked token, and (c) an expiring
+ * link in a merchant's inbox that stops working days later is worse UX
+ * than the residual risk. Revisit if tokens ever guard customer-destructive
+ * actions beyond suppression.
  */
 export type CaseTokenPurpose =
   | "unsubscribe"

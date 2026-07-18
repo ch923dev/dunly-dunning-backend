@@ -1,7 +1,7 @@
 import { Router, raw, type Request, type Response } from "express";
 import { env } from "../env.js";
 import { prisma } from "../lib/prisma.js";
-import { ingestStripeEvent, InvalidSignatureError } from "../lib/ingest.js";
+import { AccountMismatchError, ingestStripeEvent, InvalidSignatureError } from "../lib/ingest.js";
 import {
   applyResendEvent,
   verifySvixSignature,
@@ -19,13 +19,15 @@ import { handleInboundEmail, type InboundEmailData } from "../lib/replies.js";
  */
 export const webhooksRouter = Router();
 
-webhooksRouter.use(raw({ type: "application/json" }));
+// Explicit body cap (audit B18) — Stripe events are well under this; the
+// default would also be 100kb, but the limit should be a visible decision.
+webhooksRouter.use(raw({ type: "application/json", limit: "512kb" }));
 
 async function handleIngest(
   req: Request,
   res: Response,
   secret: string,
-  fallbackAccountId?: string,
+  pinnedAccountId?: string,
 ) {
   const signature = req.headers["stripe-signature"];
   if (typeof signature !== "string") {
@@ -39,15 +41,20 @@ async function handleIngest(
       rawBody: req.body,
       signature,
       secret,
-      ...(fallbackAccountId ? { fallbackAccountId } : {}),
+      ...(pinnedAccountId ? { pinnedAccountId } : {}),
     });
     console.log(
-      `[ingest] ${event.id} ${event.type} account=${event.account ?? fallbackAccountId ?? "-"} duplicate=${duplicate} ${Date.now() - startedAt}ms`,
+      `[ingest] ${event.id} ${event.type} account=${pinnedAccountId ?? event.account ?? "-"} duplicate=${duplicate} ${Date.now() - startedAt}ms`,
     );
     res.json({ received: true });
   } catch (err) {
     if (err instanceof InvalidSignatureError) {
       res.status(400).send("Invalid signature");
+      return;
+    }
+    if (err instanceof AccountMismatchError) {
+      console.warn(`[ingest] rejected: ${err.message}`);
+      res.status(400).send("Account mismatch");
       return;
     }
     // 500 → Stripe redelivers; the duplicate insert will be absorbed.

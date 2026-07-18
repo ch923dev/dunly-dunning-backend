@@ -16,6 +16,9 @@ export function verifySvixSignature(opts: {
   secret: string;
   toleranceSeconds?: number;
 }): boolean {
+  // Defense in depth (audit B19): an empty secret would HMAC over an empty
+  // key and "verify" anything. The route already 503s when unconfigured.
+  if (!opts.secret) return false;
   const ts = Number(opts.timestamp);
   if (!Number.isFinite(ts)) return false;
   const tolerance = opts.toleranceSeconds ?? 300;

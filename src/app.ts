@@ -1,9 +1,10 @@
 import express, { Router } from "express";
 import cors from "cors";
+import { rateLimit } from "express-rate-limit";
 import { toNodeHandler } from "better-auth/node";
 import { env } from "./env.js";
 import { auth } from "./lib/auth.js";
-import { healthRouter } from "./routes/health.js";
+import { healthRouter, healthDetailsRouter } from "./routes/health.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { portalRouter } from "./routes/portal.js";
 import { workspaceRouter } from "./routes/workspace.js";
@@ -18,6 +19,20 @@ import { redirectsRouter } from "./routes/redirects.js";
 import { requireWorkspace } from "./middleware/workspace.js";
 import { errorHandler } from "./middleware/error.js";
 
+/**
+ * Public-surface abuse throttles (audit B3). Per-IP, in-memory — right for
+ * the single-process deployment; swap in a shared store before scaling out.
+ * Production note: behind a proxy/LB set `app.set("trust proxy", 1)` or
+ * every client is counted against the proxy's IP.
+ */
+const limiterDefaults = { windowMs: 60_000, standardHeaders: true, legacyHeaders: false } as const;
+/** Generous — Stripe/Resend legitimately burst on redelivery. */
+const webhookLimiter = rateLimit({ ...limiterDefaults, limit: 600 });
+/** Email footer/action links — humans click these. */
+const linkLimiter = rateLimit({ ...limiterDefaults, limit: 30 });
+/** Portal links mint a Stripe session (external API call) per hit. */
+const portalLimiter = rateLimit({ ...limiterDefaults, limit: 10 });
+
 export function createApp() {
   const app = express();
 
@@ -31,7 +46,7 @@ export function createApp() {
   // Stripe webhooks need the raw body for signature verification —
   // mounted BEFORE express.json(), and never behind session auth
   // (signature verification is their only authentication).
-  app.use("/webhooks", webhooksRouter);
+  app.use("/webhooks", webhookLimiter, webhooksRouter);
 
   // Better Auth handles its own body parsing — mount BEFORE express.json().
   app.all("/api/auth/*splat", toNodeHandler(auth));
@@ -41,8 +56,11 @@ export function createApp() {
   app.use("/health", healthRouter);
 
   // Email footer links (unsubscribe / portal) — public by design, the
-  // HMAC-signed case token is the authentication.
-  app.use("/r", redirectsRouter);
+  // HMAC-signed case token is the authentication. Portal paths get the
+  // tighter limiter first (they hit Stripe per request), then the general
+  // link limiter applies to all of /r.
+  app.use(["/r/portal", "/r/expiry/portal"], portalLimiter);
+  app.use("/r", linkLimiter, redirectsRouter);
 
   // OAuth callback: the browser arrives from Stripe with no guarantees about
   // session state — the single-use state token is the authentication.
@@ -53,6 +71,7 @@ export function createApp() {
   // workspace-scoped.
   const api = Router();
   api.use(requireWorkspace);
+  api.use("/health", healthDetailsRouter);
   api.use("/workspace", workspaceRouter);
   api.use("/metrics", metricsRouter);
   api.use("/cases", casesRouter);

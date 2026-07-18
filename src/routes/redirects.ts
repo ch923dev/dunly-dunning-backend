@@ -220,7 +220,54 @@ redirectsRouter.get("/expiry/portal/:token", async (req: Request, res: Response)
 
 const prettyStatus = (status: string) => status.toLowerCase().replaceAll("_", " ");
 
+/**
+ * Confirm-then-POST (audit B4): mail clients and security scanners
+ * (SafeLinks, AV link previews) prefetch GET links in email, so a bare GET
+ * must never mutate. The emailed link lands on a confirmation page whose
+ * form POSTs back to the same URL; only the POST transitions the case.
+ * Buttons follow DESIGN.md: primary = solid brand green, danger = white
+ * with rose text/border (never solid red).
+ */
+function confirmForm(action: string, label: string, danger = false): string {
+  const style = danger
+    ? "background:#fff;color:#b4374a;border:1px solid #b4374a"
+    : "background:#13714c;color:#fff;border:0";
+  return `<form method="post" action="${action}" style="margin:24px 0 0">
+<button type="submit" style="${style};border-radius:8px;padding:11px 20px;font-size:15px;font-weight:600;cursor:pointer">${label}</button>
+</form>`;
+}
+
 redirectsRouter.get("/case/resume/:token", async (req: Request, res: Response) => {
+  const token = String(req.params.token);
+  const caseId = verifyCaseToken(token, "case-resume");
+  const dunningCase = caseId
+    ? await prisma.dunningCase.findUnique({ where: { id: caseId } })
+    : null;
+  if (!dunningCase) {
+    res.status(404).send(page("This link isn't valid", "The resume link is incomplete or expired."));
+    return;
+  }
+  if (dunningCase.status !== "PAUSED") {
+    res.send(
+      page(
+        "Nothing to resume",
+        dunningCase.status === "ACTIVE"
+          ? "This sequence is already running."
+          : `This case is ${prettyStatus(dunningCase.status)}, so the sequence can't resume.`,
+      ),
+    );
+    return;
+  }
+  res.send(
+    page(
+      "Resume this sequence?",
+      "Recovery emails for this case will start again, and held emails will go out on their schedule.",
+      confirmForm(`/r/case/resume/${token}`, "Resume recovery emails"),
+    ),
+  );
+});
+
+redirectsRouter.post("/case/resume/:token", async (req: Request, res: Response) => {
   const caseId = verifyCaseToken(String(req.params.token), "case-resume");
   const dunningCase = caseId
     ? await prisma.dunningCase.findUnique({ where: { id: caseId } })
@@ -258,6 +305,34 @@ redirectsRouter.get("/case/resume/:token", async (req: Request, res: Response) =
 });
 
 redirectsRouter.get("/case/stop/:token", async (req: Request, res: Response) => {
+  const token = String(req.params.token);
+  const caseId = verifyCaseToken(token, "case-stop");
+  const dunningCase = caseId
+    ? await prisma.dunningCase.findUnique({ where: { id: caseId } })
+    : null;
+  if (!dunningCase) {
+    res.status(404).send(page("This link isn't valid", "The stop link is incomplete or expired."));
+    return;
+  }
+  if (dunningCase.status !== "ACTIVE" && dunningCase.status !== "PAUSED") {
+    res.send(
+      page(
+        "Nothing to stop",
+        `This case is already ${prettyStatus(dunningCase.status)} — no emails were pending.`,
+      ),
+    );
+    return;
+  }
+  res.send(
+    page(
+      "Stop this sequence?",
+      "The case will be closed and marked lost, and no more recovery emails will be sent for this invoice. This can't be undone.",
+      confirmForm(`/r/case/stop/${token}`, "Stop & mark lost", true),
+    ),
+  );
+});
+
+redirectsRouter.post("/case/stop/:token", async (req: Request, res: Response) => {
   const caseId = verifyCaseToken(String(req.params.token), "case-stop");
   const dunningCase = caseId
     ? await prisma.dunningCase.findUnique({ where: { id: caseId } })
