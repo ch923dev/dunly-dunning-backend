@@ -157,7 +157,7 @@ Plus: `EmailSend.dunningCaseId String?` (now optional) + `cardExpiryCaseId Strin
 |---|---|
 | `GET /api/expiring-cards` | watching list: open cases + recent resolutions (customer, card, expiry, touches sent/pending, status) |
 | `GET /api/metrics` *(extended)* | adds `prevented: { cards, amount }` for the month + `watching` count — one payload, no second fetch |
-| `PATCH /api/workspace/settings` *(extended)* | accepts the two toggle booleans |
+| `PATCH /api/workspace` *(extended)* | accepts the two toggle booleans |
 
 ## Build steps (each ends with shown output, per the usual rhythm)
 

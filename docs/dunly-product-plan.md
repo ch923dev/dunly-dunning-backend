@@ -229,6 +229,12 @@ A "Powered by Dunly" footer link in trial-period emails (removable on any paid p
 | **5 — Launch hardening** | Week 10–11 | Test-mode simulator, suppression/unsubscribe, trial billing, docs |
 | **Beta launch** | Week 11 | 10–20 design partners from indie-SaaS communities; iterate on copy/timing defaults |
 
+> **Resequencing note:** the built Phase 5 is **reply intelligence**
+> (`phase-5-reply-intelligence.md`) — it displaced the launch-hardening slot
+> above. Launch hardening was executed separately as the 2026-06 audit
+> remediation (phases A–E); suppression/unsubscribe shipped inside build
+> phases 1–2, and trial billing remains deferred.
+
 ---
 
 ## 11. Risks & Mitigations

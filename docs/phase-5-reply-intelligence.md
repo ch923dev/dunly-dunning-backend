@@ -162,7 +162,7 @@ Plus: `EmailSend.caseReplyId String? @unique` + relation; `EmailSendKind` +
 | `POST /webhooks/resend` *(extended)* | handles `email.received`: parse reply address → classify → persist → pause → enqueue forward |
 | `GET /r/case/resume/:token` · `GET /r/case/stop/:token` | public one-tap actions (HMAC, purposes `case-resume` / `case-stop`) |
 | `GET /api/cases/:id` *(extended)* | timeline gains `replied` / `auto-reply` events; payload gains `replies` summary |
-| `PATCH /api/workspace/settings` *(extended)* | accepts `stopOnReplyEnabled` |
+| `PATCH /api/workspace` *(extended)* | accepts `stopOnReplyEnabled` |
 
 ## Build steps (each ends with shown output, per the usual rhythm)
 

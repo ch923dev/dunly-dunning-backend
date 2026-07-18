@@ -26,7 +26,7 @@ Test/replay scripts (all `npx tsx scripts/<name>.ts`): `create-failing-subscript
 - `src/env.ts` — Zod-validated env; add any new env var here first or boot fails
 - `src/lib/` — core logic (ingest, queue, email, campaigns, tokens, auth, stripe)
 - `src/routes/` — webhooks (signature-auth, no session), `/api/*` (Better Auth session + `requireWorkspace`), `/r/*` (HMAC token links)
-- `src/jobs/` — pg-boss workers: `process-events.ts` (event dispatcher), `dunning.ts` (sequence engine + send worker)
+- `src/jobs/` — pg-boss workers: `process-events.ts` (event dispatcher + reconcile sweep), `dunning.ts` (sequence engine + send worker), `expiry.ts` (pre-dunning scan/sweep), `replies.ts` (reply-forward worker)
 - `src/emails/` — React Email templates; shared `components/layout.tsx` owns the locked footer
 - `src/generated/prisma/` — generated client, **never hand-edit**; run `npm run db:generate`
 

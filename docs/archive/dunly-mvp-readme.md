@@ -1,3 +1,7 @@
+> **SUPERSEDED** — this describes the pre-Dunly MVP prototype. The shipped
+> product is specified by the phase docs in `docs/` (phases 0–5); nothing in
+> this file is current.
+
 # Stripe Dunning MVP
 
 Failed-payment recovery for Stripe subscriptions. Stripe **Smart Retries** handles retry scheduling; this service listens to webhooks and sends recovery emails via **Resend**.
