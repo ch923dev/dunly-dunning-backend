@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getWorkspace, requireOwner } from "../middleware/workspace.js";
+import { zodIssueDetails } from "../middleware/error.js";
 import {
   DEFAULT_STEPS,
   ensureDefaultCampaign,
@@ -77,13 +78,7 @@ campaignRouter.patch("/steps/:id", requireOwner, async (req, res, next) => {
     const { organizationId } = getWorkspace(req);
     const parsed = patchStepSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({
-        error: "validation",
-        details: parsed.error.issues.map((i) => ({
-          field: i.path.join("."),
-          message: i.message,
-        })),
-      });
+      res.status(400).json({ error: "validation", details: zodIssueDetails(parsed.error) });
       return;
     }
     const input = parsed.data;

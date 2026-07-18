@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getWorkspace } from "../middleware/workspace.js";
+import { zodIssueDetails } from "../middleware/error.js";
 import { enqueueSequence } from "../jobs/dunning.js";
 import { REACTIVATION_STAGE_ORDER } from "../lib/campaigns.js";
 import { formatAmount } from "../lib/email.js";
@@ -45,10 +46,7 @@ casesRouter.get("/", async (req, res, next) => {
     const { organizationId } = getWorkspace(req);
     const parsed = listQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      res.status(400).json({
-        error: "validation",
-        details: parsed.error.issues.map((i) => ({ field: i.path.join("."), message: i.message })),
-      });
+      res.status(400).json({ error: "validation", details: zodIssueDetails(parsed.error) });
       return;
     }
     const q = parsed.data;

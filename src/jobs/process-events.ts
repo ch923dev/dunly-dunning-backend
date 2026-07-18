@@ -14,27 +14,94 @@ import type { StripeConnection } from "../generated/prisma/client.js";
  */
 export async function registerEventWorkers() {
   await ensureQueue(QUEUES.processEvent);
+  await ensureQueue(QUEUES.reconcileEvents);
 
-  // batchSize > 1: webhook bursts (Stripe fixture cascades, busy merchants)
-  // would otherwise drain one job per polling tick. On a thrown error
-  // pg-boss fails the whole batch and retries it — safe, because the
-  // status guard in processWebhookEvent makes re-runs of already-processed
-  // events no-ops.
+  // batchSize 1 + localConcurrency (audit B5): webhook bursts (Stripe
+  // fixture cascades, busy merchants) drain in parallel, but each job is
+  // its own retriable unit — a poison event retries and dead-letters alone
+  // instead of dragging its batch-mates through the shared retry budget.
+  // Handlers stay idempotent/status-guarded, so overlapping re-runs of the
+  // same event remain no-ops.
   await boss.work<ProcessEventJob>(
     QUEUES.processEvent,
-    { batchSize: 10 },
+    { batchSize: 1, localConcurrency: 10 },
     async (jobs) => {
-      const failures: unknown[] = [];
       for (const job of jobs) {
-        try {
-          await processWebhookEvent(job.data.stripeEventId);
-        } catch (err) {
-          failures.push(err);
-        }
+        await processWebhookEvent(job.data.stripeEventId);
       }
-      if (failures.length > 0) throw failures[0];
     },
   );
+
+  await boss.work(QUEUES.reconcileEvents, async () => {
+    await reconcileWebhookEvents();
+  });
+  // Every 15 minutes; boss.schedule upserts — safe on every boot.
+  await boss.schedule(QUEUES.reconcileEvents, "*/15 * * * *");
+}
+
+/**
+ * Reconciliation sweep (audit B6). Ingest stores-then-enqueues without a
+ * transaction and workers can die mid-flight, so two orphan shapes exist:
+ *
+ *  - RECEIVED and stale: the enqueue after the insert never landed (and for
+ *    non-Stripe sources there is no redelivery to self-heal it) → re-enqueue;
+ *    singletonKey + the status guard absorb any duplicate.
+ *  - PROCESSING and stale: a worker crashed between the PROCESSING flip and
+ *    the terminal update, and its pg-boss job died with it. Healthy
+ *    processing takes seconds, so stale-by-minutes means dead → reset to
+ *    FAILED (the status guard admits FAILED) and re-enqueue.
+ */
+const RECONCILE_RECEIVED_AFTER_MS = 5 * 60_000;
+const RECONCILE_PROCESSING_AFTER_MS = 15 * 60_000;
+
+export async function reconcileWebhookEvents(now = new Date()) {
+  const staleReceived = await prisma.webhookEvent.findMany({
+    where: {
+      status: "RECEIVED",
+      receivedAt: { lt: new Date(now.getTime() - RECONCILE_RECEIVED_AFTER_MS) },
+    },
+    select: { stripeEventId: true },
+  });
+
+  // Staleness keys off receivedAt (the model has no updatedAt): healthy
+  // processing follows receipt within seconds, so PROCESSING minutes after
+  // receipt means the worker died. The rare race — a reconciled re-run
+  // itself flagged by a later sweep — self-resolves: the live worker's
+  // terminal update wins and the extra job no-ops off the status guard.
+  const stuckProcessing = await prisma.webhookEvent.findMany({
+    where: {
+      status: "PROCESSING",
+      receivedAt: { lt: new Date(now.getTime() - RECONCILE_PROCESSING_AFTER_MS) },
+    },
+    select: { id: true, stripeEventId: true },
+  });
+  for (const row of stuckProcessing) {
+    // Guarded reset — if the worker somehow finished in the meantime, its
+    // terminal status wins and we skip the re-enqueue.
+    const { count } = await prisma.webhookEvent.updateMany({
+      where: { id: row.id, status: "PROCESSING" },
+      data: { status: "FAILED", error: "reconciled: worker died mid-processing" },
+    });
+    if (count === 0) continue;
+    staleReceived.push({ stripeEventId: row.stripeEventId });
+  }
+
+  for (const row of staleReceived) {
+    await boss.send(QUEUES.processEvent, { stripeEventId: row.stripeEventId } satisfies ProcessEventJob, {
+      singletonKey: row.stripeEventId,
+      retryLimit: 3,
+      retryDelay: 30,
+      retryBackoff: true,
+    });
+  }
+
+  if (staleReceived.length > 0 || stuckProcessing.length > 0) {
+    console.warn(
+      `[reconcile] re-enqueued ${staleReceived.length} event(s) ` +
+        `(${stuckProcessing.length} reset from PROCESSING)`,
+    );
+  }
+  return { reEnqueued: staleReceived.length, resetFromProcessing: stuckProcessing.length };
 }
 
 export async function processWebhookEvent(stripeEventId: string) {

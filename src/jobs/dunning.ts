@@ -42,35 +42,29 @@ export async function registerDunningWorkers() {
   await ensureQueue(QUEUES.dunningSequence);
   await ensureQueue(QUEUES.sendDunningEmail);
 
+  // batchSize 1 + localConcurrency (audit B5): each job is its own retriable
+  // unit, so one poison job can't drag batch-mates through repeated retries
+  // or burn their shared retry budget. Concurrency keeps burst throughput;
+  // handlers are status-guarded and idempotent, so parallel re-kicks of the
+  // same case/send collapse to no-ops (with Resend Idempotency-Key as the
+  // final send-side backstop).
   await boss.work<DunningSequenceJob>(
     QUEUES.dunningSequence,
-    { batchSize: 5 },
+    { batchSize: 1, localConcurrency: 5 },
     async (jobs) => {
-      const failures: unknown[] = [];
       for (const job of jobs) {
-        try {
-          await runSequenceForCase(job.data.dunningCaseId);
-        } catch (err) {
-          failures.push(err);
-        }
+        await runSequenceForCase(job.data.dunningCaseId);
       }
-      if (failures.length > 0) throw failures[0];
     },
   );
 
   await boss.work<SendDunningEmailJob>(
     QUEUES.sendDunningEmail,
-    { batchSize: 5 },
+    { batchSize: 1, localConcurrency: 5 },
     async (jobs) => {
-      const failures: unknown[] = [];
       for (const job of jobs) {
-        try {
-          await deliverScheduledEmail(job.data.emailSendId);
-        } catch (err) {
-          failures.push(err);
-        }
+        await deliverScheduledEmail(job.data.emailSendId);
       }
-      if (failures.length > 0) throw failures[0];
     },
   );
 }

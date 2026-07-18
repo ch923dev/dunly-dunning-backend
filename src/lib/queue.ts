@@ -21,6 +21,8 @@ export const QUEUES = {
   sendDunningEmail: "dunning.send-email",
   /** Phase 4: daily card-expiry scan + sweep across all CONNECTED accounts. */
   expiryScan: "expiry.scan",
+  /** Periodic sweep for WebhookEvent rows orphaned in RECEIVED/PROCESSING (audit B6). */
+  reconcileEvents: "events.reconcile",
 } as const;
 
 /**

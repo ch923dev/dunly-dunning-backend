@@ -3,6 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getWorkspace } from "../middleware/workspace.js";
+import { zodIssueDetails } from "../middleware/error.js";
 import {
   ensureDefaultCampaign,
   REACTIVATION_SUBJECT,
@@ -105,7 +106,7 @@ templatesRouter.post("/preview", async (req, res, next) => {
     const { organizationId } = getWorkspace(req);
     const parsed = previewSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: "validation" });
+      res.status(400).json({ error: "validation", details: zodIssueDetails(parsed.error) });
       return;
     }
     const { stage, subject, bodyHtml } = parsed.data;
@@ -137,7 +138,7 @@ templatesRouter.post("/test-send", async (req, res, next) => {
     const { organizationId, user } = getWorkspace(req);
     const parsed = testSendSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: "validation" });
+      res.status(400).json({ error: "validation", details: zodIssueDetails(parsed.error) });
       return;
     }
 

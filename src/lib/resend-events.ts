@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { prisma } from "./prisma.js";
+import type { Prisma } from "../generated/prisma/client.js";
 
 /**
  * Resend event webhooks (phase-1 spec "Email layer"). Resend signs with
@@ -97,54 +98,72 @@ export async function applyResendEvent(
       return "applied";
     }
     case "email.bounced": {
-      await prisma.emailSend.updateMany({
-        where: { id: send.id, status: { not: "CANCELED" } },
-        data: { status: "BOUNCED" },
-      });
       // A bounced REPLY_FORWARD is merchant-bound mail (phase-5, locked
       // decision #8): never suppress the merchant's address into the
       // customer suppression list, never touch the case.
       if (send.kind === "REPLY_FORWARD") {
+        await prisma.emailSend.updateMany({
+          where: { id: send.id, status: { not: "CANCELED" } },
+          data: { status: "BOUNCED" },
+        });
         console.warn(`[resend] reply forward ${send.id} bounced (merchant address unreachable)`);
         return "applied";
       }
-      // Hard bounce → suppress the address workspace-wide. upsert update:{}
+
+      // Hard bounce → flip the send, suppress the address workspace-wide,
+      // close/cancel the affected case's pending mail — atomically (audit
+      // B7): the send worker runs concurrently, and a crash between these
+      // statements would otherwise leave a suppressed address with a still-
+      // ACTIVE case until the next guard-at-send pass. upsert update:{}
       // keeps an earlier UNSUBSCRIBED reason intact. The send's parent is
       // either a dunning case or an expiry case (phase 4) — same doctrine.
       const organizationId =
         send.dunningCase?.connection.organizationId ??
         send.cardExpiryCase?.connection.organizationId;
+      const bounceWrites: Prisma.PrismaPromise<unknown>[] = [
+        prisma.emailSend.updateMany({
+          where: { id: send.id, status: { not: "CANCELED" } },
+          data: { status: "BOUNCED" },
+        }),
+      ];
       if (send.toEmail && organizationId) {
-        await prisma.suppressionEntry.upsert({
-          where: {
-            organizationId_email: { organizationId, email: send.toEmail },
-          },
-          create: {
-            organizationId,
-            email: send.toEmail,
-            reason: "BOUNCED",
-          },
-          update: {},
-        });
+        bounceWrites.push(
+          prisma.suppressionEntry.upsert({
+            where: {
+              organizationId_email: { organizationId, email: send.toEmail },
+            },
+            create: {
+              organizationId,
+              email: send.toEmail,
+              reason: "BOUNCED",
+            },
+            update: {},
+          }),
+        );
       }
       if (send.dunningCaseId) {
-        await prisma.dunningCase.updateMany({
-          where: { id: send.dunningCaseId, status: "ACTIVE" },
-          data: { status: "SUPPRESSED" },
-        });
-        await prisma.emailSend.updateMany({
-          where: { dunningCaseId: send.dunningCaseId, status: "SCHEDULED" },
-          data: { status: "CANCELED", error: "email bounced" },
-        });
+        bounceWrites.push(
+          prisma.dunningCase.updateMany({
+            where: { id: send.dunningCaseId, status: "ACTIVE" },
+            data: { status: "SUPPRESSED" },
+          }),
+          prisma.emailSend.updateMany({
+            where: { dunningCaseId: send.dunningCaseId, status: "SCHEDULED" },
+            data: { status: "CANCELED", error: "email bounced" },
+          }),
+        );
       }
       if (send.cardExpiryCaseId) {
         // Expiry case stays OPEN (suppression ≠ resolution) — just kill the
         // remaining touch; the send guard would catch it anyway.
-        await prisma.emailSend.updateMany({
-          where: { cardExpiryCaseId: send.cardExpiryCaseId, status: "SCHEDULED" },
-          data: { status: "CANCELED", error: "email bounced" },
-        });
+        bounceWrites.push(
+          prisma.emailSend.updateMany({
+            where: { cardExpiryCaseId: send.cardExpiryCaseId, status: "SCHEDULED" },
+            data: { status: "CANCELED", error: "email bounced" },
+          }),
+        );
       }
+      await prisma.$transaction(bounceWrites);
       console.warn(`[resend] hard bounce → suppressed ${send.toEmail ?? "(unknown)"}`);
       return "applied";
     }
